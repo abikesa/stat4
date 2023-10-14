@@ -1,0 +1,182 @@
+---
+title: "140.654 Lab 6: Count Data and Poisson Regression"
+author: "Erjia Cui and Elizabeth Colantuoni"
+output: html_document
+---
+
+## Objectives
+
+For this lab session, we will:
+
+* Understand the relationship between count data and Poisson distribution.
+
+* Specify a log-linear regression model and interpret its coefficients.
+
+
+## Basic Idea
+
+* Count data is a common type of data in observational studies.
+
+* Examples include numbers of cases during an outbreak, or numbers of non-accidental deaths per day.
+
+* Poisson distribution is a natural choice to model the count.
+
+* For observed count data $y_i (i=1,2,…,n)$, we assume they follow the Poisson distribution $Pois(\lambda_i)$, so that $E(y_i) = \lambda_i$.
+
+* We model a systematic component $\eta_i = \boldsymbol{X}_i^T\beta$ and with the canonical $\log(⋅)$ link,  $$log(\lambda_i)=\eta_i,$$ $$\lambda_i=\exp(\eta_i).$$
+
+* In some cases, the rate $\lambda_i$ is different in each subgroup which depends on the size of the group or the total follow-up time of exposure time of the group. For example, we would like to model the “rate” of a disease per 1000 person-years of follow-up. Now, $E(Y_i)=t_i\lambda_i$, where $t_i$ denotes the person-years of follow-up for observation $i$ and $\lambda_i$ represents the risk of the event of interest per unit time or person-year.
+
+* It implies that $\log(\mu_i)=\log(t_i)+\log(\lambda_i)=\log(t_i)+\eta_i$. Thus, the usual relationship between $\mu_i$ and the linear predictor is **OFFSET** by the duration of exposure $\log(t_i)$.
+
+
+## Dataset：Primary Biliary Cholangitis (PBC) Study at Mayo Clinic
+
+* A total of 424 PBC patients, referred to Mayo Clinic during that ten-year interval, met eligibility criteria for the randomized placebo controlled trial of the drug D-penicillamine. 
+
+* The first 312 cases in the data set participated in the randomized trial, and contain largely complete data. 
+
+* The additional 112 cases did not participate in the clinical trial, but consented to have basic measurements recorded and to be followed for survival. Six of those cases were lost to follow-up shortly after diagnosis, so there are data here on an additional 106 cases as well as the 312 randomized participants. 
+
+* Missing data items are denoted by NA. Censoring was due to liver transplantation for twenty-five subjects with the following case numbers: 5, 105, 111, 120, 125, 158, 183, 241, 246, 247, 254, 263, 264, 265, 274, 288, 291, 295, 297, 345, 361, 362, 375, 380, 383.
+
+
+```{r, message=FALSE}
+library(dplyr)
+library(survival)
+library(randomForestSRC)
+data("pbc", package = "randomForestSRC")
+head(pbc, n = 5)
+```
+
+
+### Exploration using Poisson models 
+
+* Let’s stratify the survival time into 5 categories: 0−1000 days, 1000−2000 days, 2000−3000 days, 3000−4000 days and 4000−5000 days. 
+
+* We calculate the person-days i.e. the total exposure time in each bin of time for treatment group and placebo group using function `pyears()`.
+
+```{r}
+# The first argument rep(0,length(pbc$days)) in tcut() function specifies the starting point of each person’s follow up, which is always 0 (Day 0).
+Cutoff <- tcut(rep(0, length(pbc$days)),
+               breaks=c(-1,1000,2000,3000,4000,5000),
+               labels=c("0-1k","1k-2k","2k-3k","3k-4k","4k-5k"))
+?pyears
+
+# We provided argument scale=1000 to make sure the pyears() function convert person-days to 1000 person-days (the default is 365.25)
+py <- pyears(Surv(days, status) ~ Cutoff + treatment, data = pbc,
+             scale = 1000,
+             data.frame = TRUE)
+py$data
+```
+
+
+Let’s plot the log incidence rate for each group over time to explore the temporal patterns.
+
+```{r}
+plot(0,xlim = c(0,6),ylim = c(0,0.75),type = "n", 
+     ylab = "Incidence Rate", xlab = "Thousand days of exposure")
+
+points(c(0:4) + 0.5, (py$data$event[1:5]/py$data$pyears[1:5]),
+       col="blue",
+       type="o")
+
+points(c(0:4) + 0.5, (py$data$event[6:10]/py$data$pyears[6:10]),
+       col="green",type="o")
+
+legend("topleft",lwd=2,legend=c("Treatment","Placebo"),
+       lty=c(1,1),col=c("blue","green"),cex=0.8)
+```
+
+We fit two models as below. Here $t_i$ is the person-year of group $i$, $z_i$ is the treatment and $d_i$ is the duration of exposure.
+
+* Model 1: Main effect $$y_i\sim Poi(\lambda_i t_i)$$ $$log(\lambda_i)=\beta_0+\beta_1 z_i + \beta_2 d_i.$$
+
+* Model 1: Main effect and interaction $$y_i\sim Poi(\lambda_i t_i)$$ $$log(\lambda_i)=\beta_0+\beta_1 z_i + \beta_2 d_i + \beta_{12}z_i d_i.$$
+
+```{r}
+dataPY <- cbind(py$data, time = 1000*(c(0:4,0:4) + 0.5))
+dataPY$treatment <- 2-dataPY$treatment
+
+fit1 <- glm(event ~ treatment + time, 
+            family = poisson, offset = log(pyears), data = dataPY)
+
+fit2 <- glm(event ~ treatment * time, 
+            family = poisson, offset = log(pyears), data = dataPY)
+```
+
+```{r}
+summary(fit1)
+summary(fit2)
+```
+Interpretation of coefficients (using model 2 as an example):
+
+* Intercept: The log incidence rate at time 0 (hypothetically) for the control group.
+
+* Treatment: At time 0 (hypothetically), the treatment reduces the log incidence rate by 0.23.
+
+* Time: In the control group, the log incidence rate increases by 0.059 per 1000 days increase in the duration of exposure.
+
+* Treatment:time: In the treatment group, the log incidence rate increases by 0.24 per 1000 days increase in the duration of exposure.
+
+
+#### Prediction
+
+There are three ways to obtain the predicted number of events
+
+1. Use the `predict()` function.
+2. Extract `fitted.values` from the model object.
+3. Calculate from the model formula.
+
+```{r}
+# 1. 
+pred1 <- predict(fit2, type='response')
+
+# 2.
+pred2 <- fit2$fitted.values
+
+# 3. Calculated using model formula
+dataPY <- dataPY %>% mutate(pred=pyears*exp(fit2$coefficients[1]+fit2$coefficients[2]*treatment+fit2$coefficients[3]*time+fit2$coefficients[4]*treatment*time))
+pred3 <- dataPY$pred
+
+# Verify they are the same
+head(cbind(pred1, pred2, pred3))
+```
+
+
+We plot the fitted incidence rate for model 1
+
+```{r}
+plot(0,xlim = c(0,6),ylim = c(0,0.75),type = "n", ylab = "Incidence Rate", xlab = "Thousand days of exposure")
+
+points(c(0:4) + 0.5,
+       (predict(fit1, type='response')/dataPY$pyears)[1:5],
+       col="blue",type="o")
+
+points(c(0:4) + 0.5,
+       (predict(fit1, type='response')/dataPY$pyears)[6:10],
+       col="green",type="o")
+
+legend("topleft",lwd=2,legend=c("Treatment","Placebo"),
+       lty=c(1,1),col=c("blue","green"),cex=0.8)
+```
+
+and model 2
+
+```{r}
+plot(0,xlim = c(0,6),ylim = c(0,0.75),type = "n", ylab = "Incidence Rate", xlab = "Thousand days of exposure")
+
+points(c(0:4) + 0.5,(predict(fit2, type='response')/dataPY$pyears)[1:5],
+       col="blue",type="o")
+
+points(c(0:4) + 0.5,(predict(fit2, type='response')/dataPY$pyears)[6:10],
+       col="green",type="o")
+
+legend("topleft",lwd=2,legend=c("Treatment","Placebo"),
+       lty=c(1,1),col=c("blue","green"),cex=0.8)
+```
+
+## Exerceise: `time` as a categorical variable
+
+Fit poisson regression models with categorical variable `factor(time)` and treatment. Try both the main effect model and the model with interaction.
+

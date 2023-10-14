@@ -1,0 +1,173 @@
+---
+title: '140.654 Lab 4: CART and Random Forests'
+author: "Erjia Cui and Elizabeth Colantuoni"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+
+In the lecture, we discussed Classification and Regression Tree (CART) and Random Forests, and provided an example of constructing the random forest for a continuous variable in R. For today's lab session, we will focus on the application of random forest to a binary outcome.
+
+
+## National Medical Expenditure Survey (NMES) Dataset
+
+* Outcome: big expenditure, a binary variable defined as total expenditure > 1000 (bigexp).
+* Covariate: major smoking caused disease (mscd), age, gender, marital status, poverty level, education, belt use, ever being a smoker, packs per year of smoking, years since quitting smoked.
+* Dataset: the final dataset has 10479 rows and 11 columns.
+
+```{r,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(dplyr)
+
+load('./../nmes.rdata')
+data <- nmes
+data[data=='.'] <- NA
+## Prepare the data
+data$bigexp <- ifelse(data$totalexp>1000,1,0)
+data$mscd <- ifelse(data$lc5+data$chd5 > 0, 1, 0)
+data$age <- data$lastage
+data$marital <- as.factor(data$marital)
+data$educate <- as.factor(data$educate)
+data$poverty <- as.factor(data$povstalb)
+data$beltuse <- as.factor(data$beltuse)
+data$eversmk <- as.numeric(data$eversmk)
+data$packyears <- as.numeric(data$packyears)
+data$yearsince <- as.numeric(data$yearsince)
+
+dat <- data[,c('bigexp','mscd','male','age','marital','educate',
+               'poverty','beltuse','eversmk','packyears','yearsince')]
+dat <- dat[complete.cases(dat),]
+dim(dat)
+```
+
+After creating the dataset, we split it into training and testing data.
+
+```{r}
+set.seed(10)
+library(caret)
+# set aside a random half of the data for testing
+train_idx <- sample(nrow(dat), round(nrow(dat)/2), replace=FALSE)
+Data_train <- dat[train_idx,]
+Data_test <- dat[-train_idx,]
+```
+
+## Missing Data Imputation
+
+The missing values can be imputed using the `rfImpute` function from `randomForest` package. However, it gets pretty slow in our example and in general when the sample size is large. Therefore, we only include complete cases in our analysis and leave it as an exercise.
+
+## Logistic Regression
+
+We first fit a logistic regression model using all predictors included in the dataset.
+
+```{r}
+fit_glm <- glm(bigexp~., data = Data_train, family = binomial(link = "logit"))
+pred_glm <- predict(fit_glm, newdata = Data_test, type = "response")
+table(pred = ifelse(pred_glm>0.5,1,0), truth = Data_test$bigexp) ## set c = 0.5
+```
+
+## CART and Bagging
+
+A basic classification tree can be built using the `rpart` function of `rpart` package. An alternative is the `tree` function of `tree` package. 
+
+```{r, fig.height=7}
+## CART
+library(rpart)
+tr <- rpart(bigexp~., data = Data_train, method = "class", control=rpart.control(minsplit=10, cp=0.003))
+plot(tr); text(tr)
+pred_tr <- predict(tr, newdata = Data_test, type = "class")
+table(pred = pred_tr, truth = Data_test$bigexp)
+```
+
+Bootstrap aggregation, or bagging, is a general-purpose procedure for reducing the variance of a statistical learning method. Recall that given a set of $n$ independent observations $Z_1,…,Z_n$, each with variance $\sigma^2$, the variance of the mean $\bar{Z}$ of the observations is given by $\sigma^2/n$. In other words, averaging a set of observations reduces variance. Of course, this is not practical because we generally do not have access to multiple training sets.
+
+Instead, we can bootstrap, by taking repeated samples from the (single) training dataset. In this approach we generate $B$ different bootstrapped training data sets. We then train our method on the $b$th bootstrapped training set in order to get $\hat{f}^{*b}(x)$, the prediction at a point $x$. We then average all the predictions to obtain $\hat{f}_{bag}(x)=\frac{1}{B}\sum\limits_{b=1}^B\hat{f}^{*b}(x)$.
+
+```{r}
+# we tune the model with the training data
+fit_bag <- train(as.factor(bigexp) ~ ., data=Data_train, method="treebag")
+
+## get predicted values of the testing data
+pred_bag <- predict(fit_bag, Data_test)
+table(pred = pred_bag, truth = Data_test$bigexp)
+
+## plot variable importance
+plot(varImp(fit_bag), top = 10)
+```
+
+
+## Random Forest
+
+We next try a random forest. Random forests provide an improvement over bagged trees by way of a small tweak that decorrelates the trees. This reduces the variance when we average the trees. As in bagging, we build a number of decision trees on bootstrapped training samples. But when building these decision trees, a random selection of m predictors is chosen as split candidates from the full set of p predictors. The split is allowed to use only one of those m predictors.
+
+### Select m and Number of Trees
+
+We use the `tuneRF` function to select m with the smallest out-of-bag error. After selecting m, we build a random forest object to see if the number of trees is large enough.
+
+```{r, message=FALSE}
+library(randomForest)
+## fix ntree = 500, select m
+tune_rf <- tuneRF(x = Data_train[,2:11], y = as.factor(Data_train[,1]), ntreeTry = 500)
+tune_rf
+
+## fix m, plot error vs. ntree to check if 500 is suitable
+m <- tune_rf[which.min(tune_rf[,2]),1]
+rf_m <- randomForest(x = Data_train[,2:11], y = as.factor(Data_train[,1]), xtest = Data_test[,2:11], ytest = as.factor(Data_test[,1]), mtry = m, ntree = 500)
+plot(1:500, rf_m$err.rate[,1], col = "aquamarine4", type = "l", xlab = "Number of Trees",
+     ylab = "OOB Error Rate")
+```
+
+From the plot, 500 trees are large enough. A smaller number of trees, say 300, can also achieve similar accuracy.
+
+
+### Prediction and Variable Importance
+
+After selecting m and ntree, we build the random forest model and obtain votes as well as predicted values. The votes are the out-of-bag votes for each observation in the training set, and prediction is the 0/1 assignment which is the most frequently occurring out-of-bag outcome in each terminal node. In our example for each subject, each of the 500 classification trees in the random forest casts a vote of whether it has big medical expenditure. This is a major difference between the random forest models of binary and continuous outcomes.
+
+```{r}
+## get out-of-bag predictions from the model
+pred_OOB <- rf_m$predicted
+
+## get out-of-bag votes from the model
+pred_vote <- as.data.frame(rf_m$votes)
+pred_vote$pred_class <- pred_OOB
+head(pred_vote)
+```
+
+To obtain the predicted values for future observations or validation sample, you can use either predict command or specify those samples in the `xtest` and `ytest` arguments when building a random forest. Since we specify the testing dataset when building the model, the results are stored in the `test` element of fitted object.
+
+```{r}
+## get the predicted values of testing data
+pred_test <- rf_m$test$predicted
+table(pred = pred_test, truth = Data_test$bigexp)
+```
+
+The variable importance plot is obtained using the `varImpPlot` function of `randomForest` package.
+
+```{r}
+## variable importance plot
+varImpPlot(rf_m, main = "Random Forest: Variable Importance")
+
+## variable importance table
+var.imp <- data.frame(importance(rf_m, type=2))
+var.imp$Variables <- row.names(var.imp)
+var.imp[order(var.imp$MeanDecreaseGini, decreasing = T), ]
+```
+
+
+### Create a Summary Average Tree
+
+After obtaining out-of-bag predictions from random forest, we could create a summary of the random forest using these predictions as the outcome and create a CART.
+
+```{r, fig.height=8}
+Data_train$pred_OOB <- pred_OOB
+tr_summary <- rpart(pred_OOB~., data = Data_train[,-1], method = "class", control=rpart.control(minsplit=10, cp=0.001))
+plot(tr_summary); text(tr_summary)
+```
+
+
+
+

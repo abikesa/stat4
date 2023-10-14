@@ -1,0 +1,170 @@
+---
+title: "140.654 Lab 1"
+author: "Erjia Cui & Elizabeth Colantuoni"
+output: html_document
+---
+
+The objectives of this lab session are (1) Review interpretation of regression coefficients from a logistic regression model; (2) Connect logistic regression coefficients to commonly computed statistics from 2x2 tables; (3) Use tables to display effect modification / interaction for binary outcomes and two binary covariates
+
+```{r,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(dplyr)
+load('./nmes.rdata')
+data <- nmes
+data[data == '.'] <- NA
+```
+
+### National Medical Expenditure Survey (NMES) dataset
+
+* Outcome: big expenditure defined as total expenditure > 1000 (bigexp)
+* Exposure: Major smoking caused disease (mscd)
+* Covariate: person's age (older: whether his/her age >= 65 yrs)
+* Dataset: 11,684 people for 40 or older who have smoking data available
+
+```{r}
+data$posexp <- ifelse(data$totalexp > 0, 1, 0)
+data$mscd <- ifelse(data$lc5+data$chd5 > 0, 1, 0)
+data1 <- data[!is.na(data$eversmk),]
+
+# total sample
+data1$older <- ifelse(data1$lastage < 65, 0, 1)
+data1$bigexp <- ifelse(data1$totalexp > 1000, 1, 0)
+dim(data1)
+
+# table (stratify by mscd, old)
+mytable <- table(bigexp = data1$bigexp, mscd = data1$mscd, older = data1$older)
+ftable(mytable) # flatten the contingency table
+
+```
+
+### 1. Model C: intercept + mscd + old + mscd:old
+
+Suppose we want to understand the relationship between having a big expenditure and MSCD separately for younger and older persons. We first make contingency tables for each group.
+
+__1. Table 1: Within younger strata, tabulate big expenditure and mscd__
+```{r}
+table(bigexp = data1$bigexp[data1$older == 0], mscd = data1$mscd[data1$older == 0])
+```
+
+__2. Table 2: Within older strata, tabulate big expenditure and mscd__
+```{r}
+table(bigexp = data1$bigexp[data1$older == 1], mscd = data1$mscd[data1$older == 1])
+```
+
+__3. Table 3: Within total sample, tabulate big expenditure and mscd__
+```{r}
+table(bigexp = data1$bigexp, mscd = data1$mscd)
+```
+
+The question of interest can be specified as the following model:
+
+$$
+Model C: logit [ Pr(Y = 1 | MSCD, Old) ] = \beta_0 + \beta_1\cdot MSCD + \beta_2 \cdot Old + \beta_3 \cdot MSCD \cdot Old
+$$
+
+
+Write down all possible scenarios:
+
+* For younger population: \begin{equation} logit [ Pr(Y = 1 | MSCD, Old=0) ] = \beta_0  + \beta_1\cdot MSCD\end{equation}
+* For older popultion: \begin{equation} logit [ Pr(Y = 1 | MSCD, Old=1) ] = (\beta_0 + \beta_2) + (\beta_1 + \beta_3) \cdot MSCD \end{equation}
+
+__In class exercise: How to derive the estimates and SEs?__
+
+Derive the estimate and SE for $\beta_0, \beta_1, \beta_0 + \beta_2, \beta_1 + \beta_3$ using Table1-3. Also, try to think about how to interpret these estimates?
+
+</br></br></br>
+
+
+* $\beta_0$: log odds of having big expenditure in the younger population without a MSCD (Refer to Table1)
+\begin{align*}
+\hat{\beta_0} &= log(\frac{1802}{4780}) = - 0.976\\
+SE(\hat{\beta_0}) &= \sqrt{\frac{1}{4780} + \frac{1}{1802}} = 0.0276
+\end{align*}
+
+* $\beta_0 + \beta_2$: log odds of having big expenditure in the older population without a MSCD (Refer to Table2)
+
+\begin{align*}
+\hat{\beta_0}+\hat{ \beta_2} &= log(\frac{1547}{2236}) = -0.368\\
+SE(\hat{\beta_0}+ \hat{\beta_2}) &= \sqrt{\frac{1}{1547} + \frac{1}{2236}} = 0.033
+\end{align*}
+
+* Then, $\beta_2$:
+\begin{align*}
+\hat{ \beta_2} &= \hat{\beta_0}+\hat{ \beta_2}-\hat{\beta_0} = -0.368 -(-0.976) = 0.608\\
+SE(\hat{\beta_2}) &= \sqrt{SE(\hat{\beta_0}+ \hat{\beta_2})^2  + SE(\hat{\beta_0})^2} = 0.043
+\end{align*}
+
+
+* $\beta_1$:log odds ratio of having big expenditure comparing the younger persons with a MSCD to younger persons without a MSCD. An alternative interpretation is: the difference in the log odds of having a big expenditure for younger persons with a MSCD and the log odds of having a big expenditure for younger persons without a MSCD (Refer to Table1)
+
+\begin{align*}
+\hat{\beta_1} &= log(\frac{273/101}{1802/4780}) = 1.97\\
+SE(\hat{\beta_1}) &= \sqrt{\frac{1}{273} +\frac{1}{101}+\frac{1}{1802}+ \frac{1}{4780}} = 0.1197
+\end{align*}
+
+* $\beta_1 + \beta_3$: log odds ratio of having big expenditure comparing the older persons with a MSCD to older persons without a MSCD. (Refer to Table2)
+
+\begin{align*}
+\hat{\beta_1}+\hat{ \beta_3} &= log(\frac{713/232}{1547/2236}) = 1.491\\
+SE(\hat{\beta_1}+ \hat{\beta_3}) &= \sqrt{\frac{1}{713} +\frac{1}{232}+\frac{1}{1547}+ \frac{1}{2236}} = 0.0825
+\end{align*}
+
+
+* $\beta_3$: difference in the log odds ratio of having big expenditure comparing older persons with and without a MSCD and the log odds ratio of having a big expenditure comparing younger persons with and without a MSCD
+
+For $\beta_3$: log of ratio of two OR
+\begin{align*}
+\beta_1 &= log[OR(MSCD,Old=0)] = log(\frac{Pr(Y|MSCD,Old=0)}{1 - Pr(Y|MSCD,Old=0)})\\
+\beta_1 + \beta_3 &= log[OR(MSCD,Old=1)]\\
+\beta_3 &= (\beta_1 + \beta_3)-\beta_1 = log[OR(MSCD,Old=1)] - log[OR(MSCD,Old=0)] = log(\frac{OR(MSCD,Old=1)}{OR(MSCD,Old=0)})
+\end{align*}
+
+\begin{align*}
+\hat{ \beta_3} &= \hat{\beta_1}+\hat{ \beta_3}-\hat{\beta_1} = 1.491 -(1.97) = -0.479\\
+SE(\hat{\beta_3}) &= \sqrt{SE(\hat{\beta_1}+\hat{ \beta_3})^2  + SE(\hat{\beta_1})^2} = 0.145
+\end{align*}
+
+__Using GLM in R and Compare with the above derivation__
+
+Recall the derivation:
+$$
+\hat{\beta_0} = - 0.976; SE_{\hat{\beta_0}} = 0.0276\\
+\hat{\beta_1} = 1.97; SE_{\hat{\beta_1}} = 0.1197\\
+\hat{\beta_2} = 0.608; SE_{\hat{\beta_2}} = 0.043\\
+\hat{\beta_3} = -0.479; SE_{\hat{\beta_3}} = 0.145\\
+$$
+
+```{r}
+data1$mscd.older <- data1$mscd*data1$older
+lrC <- glm(bigexp~mscd+older+mscd.older, data=data1, family=binomial(link="logit"))
+summary.glm(lrC)
+```
+
+They are identical!
+
+### 2. Revisit Logistic regression models (A, B)
+
+__Model A: intercept only__
+
+$$
+Model A:  logit [Pr(Y = 1) ] = \beta_0
+$$
+
+
+```{r}
+lrA <- glm(bigexp~1, data=data1, family=binomial(link="logit"))
+summary.glm(lrA)
+```
+
+__Model B: intercept + mscd__
+
+$$
+Model B: logit [Pr(Y = 1 | MSCD )] = \beta_0 + \beta_1 \cdot MSCD
+$$
+```{r}
+lrB <- glm(bigexp~mscd, data=data1, family=binomial(link="logit"))
+summary.glm(lrB)
+```
+
+As you might observe, the estimates are the same as the ones we have derived in class.
+

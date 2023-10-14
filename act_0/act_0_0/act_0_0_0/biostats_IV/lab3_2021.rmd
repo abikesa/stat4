@@ -1,0 +1,165 @@
+---
+title: "140.654 Lab 3"
+author: "Erjia Cui, Jingning Zhang and Elizabeth Colantuoni"
+output: html_document
+---
+
+### Objectives
+
+In this lab session, we will: 1. review the predictions of logistic regression; 2. evaluate the classifier performance using ROC curve.
+
+```{r,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library("pROC")
+load('./../nmes.rdata')
+data <- nmes
+data[data=='.'] <- NA
+data$bigexp=ifelse(data$totalexp>1000,1,0)
+data$agem65=data$lastage-65
+data$age_sp65 <- ifelse(data$lastage-65>=0,data$lastage-65,0)
+data$marital <- as.factor(data$marital)
+data$educate <- as.factor(data$educate)
+data$povstalb <- as.factor(data$povstalb)
+data$beltuse <- as.factor(data$beltuse)
+
+dat <- data[,c('bigexp','lc5' ,'chd5','male','agem65','age_sp65','marital','educate','povstalb','beltuse')]
+dat <- dat[complete.cases(dat),]
+```
+
+### 1. Introduction
+
+Predictions from logistic regression or other models for binary responses can be used to classify subjects. 
+The basic idea is to build a prediction model from "training" data that comprises binary response (or more generally categorical) Y and predictor variables X. For today's lab, we focus on binary response Y (coded as 0,1). For the output of a prediction model, we could obtain predicted probability ($\hat{p_i},i=1,2,..,n$) for each person. Note $\hat{p_i}$ is estimated value of $Pr(Y_i = 1 | X) = E(Y_i|X)$.
+
+
+Suppose we would like to use the following criteria to classify a new person($X_i$) (usually from "testing" dataset):
+$\forall c \in (0,1)$ (c is a given threshold), we create a dichotomous “prediction”, $d_i(c)$. 
+\[
+    d_i(c)=\left\{
+                \begin{array}{ll}
+                  1, if \hat{p_i} >c\\
+                  0, if \hat{p_i} \leq c
+                \end{array}
+              \right.
+  \]
+
+After classifying each person, we can ask how well the classification system works using two measures of accuracy: sensitivity and specificity. 
+
+* Sensitivity(c) = $Pr(d(c)=1|Y=1)$: true-positive rate
+* Specificity(c) = $Pr(d(c)=0|Y=0)$: true-negative rate
+
+The goal is to find a set of predictor variables and model that have sensitivity and specificity values close to 1. The receiving operating characteristic (ROC) is a measure of classifier performance. 
+
+### 2. ROC
+
+To illustrate, we use the National Medical Expenditure Survey (NMES) study data. We want to identify persons who are likely to spend more than $1,000 on medical services (i.e.bigexp) in a year, using their age, gender and whether they have a major smoking caused disease. We will distinguish lung cancer/COPD from coronary heart disease and stroke in the set of predictors. We can also use their poverty level, education and whether they regularly use a seat belt as a proxy for adversity to risk.
+
+__Model 1__
+
+```{r}
+nrow(dat)
+fit <- glm(bigexp ~ lc5 + chd5 + male + agem65 + age_sp65 + marital + educate + povstalb + beltuse, family = 'binomial',data = dat)
+summary(fit)
+```
+
+Suppose we set the threshold c = 0.5, then:
+
+```{r}
+c <- 0.5 ## threshold
+pred <- predict(fit, newdata = dat, type = 'response')
+roc.5 <- data.frame(pred = ifelse(pred>c,1,0), truth = dat$bigexp)
+table(pred = roc.5$pred, truth = roc.5$truth)
+```
+
+* Sensitivity = $\frac{1155}{1155 + 3379}$ = 0.25
+* Specificity = $\frac{7319}{7319 + 449}$ = 0.94
+
+__Tradeoff between Sensitivity and Specificity__
+
+If we decrease the threshold, c = 0.25, the sensitivity improves but specificity decreases:
+```{r}
+c <- 0.25
+pred <- predict(fit, newdata = dat, type = 'response')
+roc.25 <- data.frame(pred = ifelse(pred>c,1,0), truth = dat$bigexp)
+table(pred = roc.25$pred, truth = roc.25$truth)
+```
+
+* Sensitivity = $\frac{4009}{4009 + 525}$ = 0.88
+* Specificity = $\frac{2007}{2007 + 5761}$ = 0.26
+
+Rather than trying a couple of threshold values, we can calculate the whole functions sens(c) and spec(c) for all c in (0,1) and plot them against c. 
+
+__ROC plot and AUC estimation__
+
+AUC: area under the curve
+
+```{r}
+ROC_fit <- roc(dat$bigexp, pred)
+plot(ROC_fit, legacy.axes = TRUE)
+# AUC
+ROC_fit$auc
+```
+
+### 3. Cross-validated ROC curves (10 fold)
+
+When evaluating models, we often want to assess how well it performs in predicting the response variable on different subsets of the data. One technique for doing this is k-fold cross-validation, which partitions the data into k equally sized folds and evaluates the performance/accuracy on hold-out (testing) dataset. It is a method to obtain less biased estimates of prediction error for a new set of Ys at the same Xs.
+
+First we begin by generating group labels.
+
+```{r}
+# generate group labels
+set.seed(123)
+id_rand <- runif(nrow(dat))
+n_fold <- 10
+cv_group <- ntile(id_rand, n_fold)  # ntile(): a rough rank, which breaks the input vector into n buckets.
+table(cv_group)
+```
+
+```{r,message=FALSE}
+# initialization
+OutTrue <- dat$bigexp
+X <- dat[,c('lc5' ,'chd5','male','agem65','age_sp65','marital','educate','povstalb','beltuse')]
+cv_results <- array(0, c(0, 2))
+colnames(cv_results) <- c("Truth", "Prob")
+
+# begin cv
+for (i in 1:n_fold) {
+    # allocate people to the test and training sets
+    data_train <- data.frame(X[cv_group != i, ], outcome = OutTrue[cv_group != i])
+    data_test <- data.frame(X[cv_group == i, ], outcome = OutTrue[cv_group == i])
+    
+    fit_cv <- glm(outcome ~ lc5 + chd5 + male + agem65 + age_sp65 + marital + educate + povstalb + beltuse,family = 'binomial',data = data_train) # model 1
+    
+    # predict OutTrue on test set (those in cv_group==i)
+    cv_results <- rbind(cv_results, data.frame(Truth = data_test$outcome, 
+        Prob = predict(fit_cv, data_test, type = "response")))
+}
+
+
+ROC_all_cv <- roc(cv_results$Truth, cv_results$Prob)
+ROC_all <- roc(OutTrue, pred) # model1
+
+plot(1 - ROC_all$specificities, ROC_all$sensitivities, xlim = c(0, 
+    1), ylim = c(0, 1), xlab = "", ylab = "", pch = 16, col = "black", 
+    cex = 0.8, type = "l", main = "ROC comparison (cv)")
+points(1 - ROC_all_cv$specificities, ROC_all_cv$sensitivities, 
+    pch = 16, col = "red", cex = 0.8, type = "l")
+abline(c(0, 1), col = "grey", lty = 2)
+title(xlab = "1-specificity", line = 1.9)
+title(ylab = "sensitivity", line = 1.9)
+legend("bottomright", legend = c(paste0("Model1 (no cv), AUC=", format(ROC_all$auc, 
+    digits = 3)), paste0("Model1 (cv), AUC=", format(ROC_all_cv$auc, 
+    digits = 3))), lty = 1, col = c("black", "red"))
+```
+
+
+### In-class exercise
+
+__Use cross-validated approach, for the following model (with interaction terms):__
+
+In addition to Model 1, add 3 two-way interaction terms: lc5-male, chd5-male, age_sp65-marital
+
+* Draw the ROC curve and report the AUC estimation 
+* Compare its performance against Model 1
+

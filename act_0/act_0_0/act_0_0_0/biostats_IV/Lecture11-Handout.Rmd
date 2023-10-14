@@ -1,0 +1,866 @@
+---
+title: "Applications of Log-Linear models to Public Health"
+author: "Elizabeth Colantuoni, Scott Zeger"
+date: "5/3/2021"
+output:
+  pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(splines)
+library(dplyr)
+library(MASS)
+library(rmarkdown)
+library(tidyverse)
+library(ggplot2)
+library(kableExtra)
+```
+
+# I. Objectives
+
+Upon completion of this session, you will be able to do the following:
+
+* Describe how to utilize Poisson log-linear models as tools for prediction 
+
+* Implement Poisson log-linear models and parametric bootstrap procedures to estimate excess deaths in Puerto Rico attributable to Hurricane Maria
+
+* Specify and interpret the coefficients for a Poisson log-linear model for discrete time-to-event data
+
+* Understand and explain the proportional and non-proporational risk cases
+
+# II. Case Study 1  
+
+In this first case study, we are adapting an analysis developed by Dr. Scott Zeger for 140.654 AY 2017-18.  The goal of the analysis is to estimate the excess mortality attributable to Hurricane Maria, Sept 20, 2017.
+
+The data available are deaths per month from June 2010 through February 2018 within 18 strata defined by:
+
+ * Socioeconomic development: tertiles (seitert 1 = high, seitert 2 = mid, seitert 3 = low)
+ 
+ * Age group: < 40 (agec5 1), 40 - 64 (agec5 2), > 64 (agec5 3)
+ 
+ * sex: sex 1 = male, sex 2 = female
+  
+
+```{r Data input}
+# Load the data
+load("./prtest_complete_sz.rdata")
+#
+d = prtest_complete_sz
+# Create a year.month variable or order the monthly data
+# Create a t variable to count months 1 to 92, separately for each strata (18)
+# Create two "training" set indicators based on calendar time
+d = d %>% mutate(
+  year.month = year + (month-1)/12,
+  t = rep(1:92,18),
+  train1 = ifelse(year.month < 2017.2, TRUE, FALSE),
+  train2 = ifelse(year.month < 2017.65,TRUE, FALSE)
+)
+d = d %>% rename(
+  sei = seitert,
+  age=agec5,
+  pop=csi_mig
+)
+```
+
+## A. Displays of the data
+
+We will display the mean number of deaths reported by month and year.
+
+In addition, we make a figure displaying the total deaths per month per 100,000 people in the population.
+
+```{r Display observed data,echo=FALSE}
+## Compute mean deaths by month
+d %>% group_by(month) %>% summarise(mean.month=mean(deaths)) %>%   print(cbind(month.abb[month],mean.month)) 
+## Compute mean deaths by year
+## NOTE: only two months of data available for 2018
+d %>% group_by(year) %>% summarise(mean.year=mean(deaths)) %>% 
+  print(cbind(month,total.month))
+```
+
+```{r Display observed data plots,echo=FALSE,fig.height=4,fig.width=6}
+## Plot monthly deaths
+d %>% group_by(t) %>% summarise(total.deaths=sum(deaths),total.pop=sum(pop))                  %>% ggplot(., aes(x=t,y=total.deaths)) + geom_line() + geom_vline(xintercept=86.1) + labs(y="Total deaths",x="Month since July 2010")
+
+## Plot monthly deaths per 1000 population size
+d %>% group_by(t) %>% summarise(total.deaths=sum(deaths),total.pop=sum(pop))                  %>% mutate(y = total.deaths/total.pop*100000) %>% ggplot(., aes(x=t,y=y)) + geom_line() + geom_vline(xintercept=86.1) + labs(y="Total deaths per 100,000 people",x="Month since July 2010")
+```
+
+## B. Model specification, fitting and summary
+
+We fit several overdispersed log-linear (Poisson) regression models to the first 81 months (train1, July 2010 to Feb 2017) or 86 months (train2: July 2010 to August 2017). 
+
+Each model includes an offset for population size at each month that includes migration.
+
+We will build up the model sequentially by adding components:
+
+1. season: a (sin, cos) pair of predictors at the annual frequencies (2 degrees of freedom)
+
+2. season; a (sin, cos) pair of predictors at the semi-annual frequencies (2 degrees of freedom)
+
+3. trend: a natural spline of time (2 degrees of freedom)
+
+4. stratum: an (age, sex, and SES) stratum-specific intercepts (log rates of mortality; 17 degrees of freedom);
+
+A fifth model will be considered that interacts the long run time trend and the seasonal effects.
+
+The parameters in the model are log relative risks of death.
+
+```{r analysis}
+#
+#  create a data frame for the training data set
+#
+d.train <- d %>% filter(train1==TRUE)
+#
+# set the boundary and internal knots for the intended 
+# degrees of freedom for the longer-term time trend
+#
+df.trend = 2
+Boundary.knots.trend = c(min(d.train$t),max(d.train$t)) 
+knots.trend = quantile(d.train$t,p=(1:(df.trend))/(df.trend+1))
+#
+# specify formula fj, fit model to produce mj and 
+# obtain predicted values in prj for j=1,..,5 
+#
+f1 = deaths~cos(2*pi*t/12) + sin(2*pi*t/12)
+m1 = glm(data=d.train, 
+         formula=f1,
+         family=quasipoisson(),offset=log(pop),x=TRUE)
+pr1=as.data.frame(predict(m1,type="response",newdata=d,se.fit=TRUE))
+colnames(pr1)=c("fit1","se.fit1","scale.fit1")
+
+f2 = deaths~cos(2*pi*t/12) + sin(2*pi*t/12)+cos(2*pi*t/6) + sin(2*pi*t/6)
+m2 = glm(data=d.train, 
+         formula=f2,
+         family=quasipoisson(),offset=log(pop),x=TRUE)
+pr2=as.data.frame(predict(m2,type="response",newdata=d,se.fit=TRUE))
+colnames(pr2)=c("fit2","se.fit2","scale.fit2")
+
+f3 = deaths~ns(t,Boundary.knots=Boundary.knots.trend,knots = knots.trend)+
+  cos(2*pi*t/12) + sin(2*pi*t/12)+cos(2*pi*t/6) + sin(2*pi*t/6)
+m3 = glm(data=d.train, 
+         formula=f3,
+         family=quasipoisson(),offset=log(pop),x=TRUE)
+pr3=as.data.frame(predict(m3,type="response",newdata=d,se.fit=TRUE))
+colnames(pr3)=c("fit3","se.fit3","scale.fit3")
+
+f4 = deaths~factor(age)*factor(sex)*factor(sei) +
+ns(t,Boundary.knots=Boundary.knots.trend,knots = knots.trend)+
+  cos(2*pi*t/12) + sin(2*pi*t/12)+cos(2*pi*t/6) + sin(2*pi*t/6)
+m4 = glm(data=d.train, 
+         formula=f4,
+         family=quasipoisson(),offset=log(pop),x=TRUE)
+pr4=as.data.frame(predict(m4,type="response",newdata=d,se.fit=TRUE))
+colnames(pr4)=c("fit4","se.fit4","scale.fit4")
+
+f5 = deaths~factor(age)*factor(sex)*factor(sei) +
+ns(t,Boundary.knots=Boundary.knots.trend,knots = knots.trend)*
+  (cos(2*pi*t/12) + sin(2*pi*t/12)+cos(2*pi*t/6) + sin(2*pi*t/6))
+m5 = glm(data=d.train, 
+         formula=f5,
+         family=quasipoisson(),offset=log(pop),x=TRUE)
+pr5=as.data.frame(predict(m5,type="response",newdata=d,se.fit=TRUE))
+colnames(pr5)=c("fit5","se.fit5","scale.fit5")
+#
+# obtain summary statistics 
+# (deviance, residual.df, model.df, 
+# over-dispersion estimates (Mean squared Pearson residuals)) 
+# for each of the models
+#
+d.pr = cbind(d,pr1,pr2,pr3,pr4,pr5)
+dev.all=c(deviance(m1),deviance(m2),deviance(m3),deviance(m4),deviance(m5))
+df.resid.all=c(df.residual(m1),df.residual(m2),df.residual(m3),
+               df.residual(m4),df.residual(m5))
+df.model.all = m1$df.null - df.resid.all
+phi.all=dev.all/df.resid.all
+summary.stats=data.frame(dev=dev.all,df.m=round(df.model.all,0),
+                         df.r=round(df.resid.all,0),odp=phi.all)
+rownames(summary.stats) = c("Model 1","Model 2","Model 3","Model 4","Model 5")
+print(summary.stats)
+#
+```
+
+
+\newpage
+
+## C. Model fit visualization 
+
+Display observed total deaths by month and predicted totals using first 81 months from Models 1-5.
+
+```{r Display observed and predicted monthly total deaths 1 to 3,fig.height=4,fig.width=6,echo=FALSE}
+total.deaths.models = d.pr %>% group_by(t) %>% summarise(total.deaths=sum(deaths),total.pop = sum(pop),total.pr1=sum(fit1),total.pr2=sum(fit2),total.pr3=sum(fit3),total.pr4=sum(fit4),total.pr5=sum(fit5))
+total.deaths.models$y = total.deaths.models$total.deaths/total.deaths.models$total.pop*100000
+total.deaths.models$y1 = total.deaths.models$total.pr1/total.deaths.models$total.pop*100000
+total.deaths.models$y2 = total.deaths.models$total.pr2/total.deaths.models$total.pop*100000
+total.deaths.models$y3 = total.deaths.models$total.pr3/total.deaths.models$total.pop*100000
+total.deaths.models$y4 = total.deaths.models$total.pr4/total.deaths.models$total.pop*100000
+total.deaths.models$y5 = total.deaths.models$total.pr5/total.deaths.models$total.pop*100000
+#
+tick.values.x=c(7,19,31,43,55,67,79,91)
+tick.labels.x=as.character(2011:2018)
+plot(total.deaths.models$t, total.deaths.models$total.deaths,xaxt="n",las=2,type="p",pch="o",col="black",xlab="Time (Months)",ylab="Deaths",main="Observed and Predicted Deaths Models 1 - 3",ylim=c(2000,3200));legend(6,3200,c("Model1","Model2","Model3"),col=c("red","orange","purple"),lty=c(1,1,1),bty="n",cex=0.75,adj=0);axis(side = 1,at = tick.values.x,labels =tick.labels.x,tck=-.01,cex.lab=0.5);lines(total.deaths.models$t,total.deaths.models$total.pr1,col="red");lines(total.deaths.models$t,total.deaths.models$total.pr2,col="orange");lines(total.deaths.models$t,total.deaths.models$total.pr3,col="purple");abline(v=c(81.5,86.5),col="grey")
+
+plot(total.deaths.models$t, total.deaths.models$y,xaxt="n",las=2,type="p",pch="o",col="black",xlab="Time (Months)",ylab="Deaths per 100,000 persons",main="Observed and Predicted Deaths Models 1 - 3",ylim=c(60,100));axis(side = 1, at = tick.values.x,labels = tick.labels.x,tck=-.01,cex.lab=0.5);lines(total.deaths.models$t,total.deaths.models$y1,col="red");lines(total.deaths.models$t,total.deaths.models$y2,col="orange");lines(total.deaths.models$t,total.deaths.models$y3,col="purple");abline(v=c(81.5,86.5),col="grey")
+```
+
+\newpage
+
+```{r Display observed and predicted monthly total deaths 3 to 5,fig.height=4,fig.width=6,echo=FALSE}
+plot(total.deaths.models$t, total.deaths.models$total.deaths,xaxt="n",type="p",pch="o",col="black",xlab="Time (Months)",las =2,ylab="Deaths",main="Observed and Predicted Deaths Models 3 - 5",ylim=c(2000,3200));legend(7,3200,c("Model3","Model4","Model5"),col=c("purple","green","black"),lty=c(1,1,1),bty="n",cex=0.5,adj=0);axis(side = 1, 
+     at = tick.values.x, 
+     labels = tick.labels.x,
+     tck=-.01,cex.lab=0.5);lines(total.deaths.models$t,total.deaths.models$total.pr3,col="purple");lines(total.deaths.models$t,total.deaths.models$total.pr4,col="green");lines(total.deaths.models$t,total.deaths.models$total.pr5,col="black");abline(v=c(81.5,86.5),col="grey")
+
+plot(total.deaths.models$t, total.deaths.models$y,xaxt="n",type="p",pch="o",col="black",xlab="Time (Months)",las =2,ylab="Deaths per 100,000 persons",main="Observed and Predicted Deaths Models 3 - 5",ylim=c(60,100));axis(side = 1, 
+     at = tick.values.x, 
+     labels = tick.labels.x,
+     tck=-.01,cex.lab=0.5);lines(total.deaths.models$t,total.deaths.models$y3,col="purple");lines(total.deaths.models$t,total.deaths.models$y4,col="green");lines(total.deaths.models$t,total.deaths.models$y5,col="black");abline(v=c(81.5,86.5),col="grey")
+```
+
+\newpage
+
+## D. Change the duration of the training data
+
+In the analysis above, we utilized data from July 2010 to Feb 2017 (81 months) to predict total numbers of deaths from Mar 2017 through Feb 2018.
+
+Now, we will utilize 86 months of data (July 2010 to August 2017), i.e. the data leading up to the month when Hurricane Maria struck, to predict total number of deaths from Sept 2017 through Feb 2018.
+
+We focus on fitting on Model 4 and 5.
+
+The table below summarizes the fit of Model 4 and 5 based on the two training sets (Train 1 and 2).
+
+```{r training2,echo=FALSE}
+#
+#  create a data frame for the training data set
+#
+d.train2 <- d %>% filter(train2==TRUE)
+#
+# set the boundary and internal knots for 
+# the intended degrees of freedom for the longer-term time trend
+#
+df.trend = 2
+Boundary.knots.trend = c(min(d.train2$t),max(d.train2$t)); knots.trend = quantile(d.train2$t,p=(1:(df.trend))/(df.trend+1))
+#
+# Only consider models 4 and 5 
+#
+f4 = deaths~factor(age)*factor(sex)*factor(sei) +
+ns(t,Boundary.knots=Boundary.knots.trend,knots = knots.trend)+
+  cos(2*pi*t/12) + sin(2*pi*t/12)+cos(2*pi*t/6) + sin(2*pi*t/6)
+m42 = glm(data=d.train2, 
+         formula=f4,
+         family=quasipoisson(),offset=log(pop),x=TRUE)
+pr42=as.data.frame(predict(m42,type="response",newdata=d,se.fit=TRUE))
+colnames(pr42)=c("fit42","se.fit42","scale.fit42")
+
+f5 = deaths~factor(age)*factor(sex)*factor(sei) +
+ns(t,Boundary.knots=Boundary.knots.trend,knots = knots.trend)*
+  (cos(2*pi*t/12) + sin(2*pi*t/12)+cos(2*pi*t/6) + sin(2*pi*t/6))
+m52 = glm(data=d.train2, 
+         formula=f5,
+         family=quasipoisson(),offset=log(pop),x=TRUE)
+pr52=as.data.frame(predict(m52,type="response",newdata=d,se.fit=TRUE))
+colnames(pr52)=c("fit52","se.fit52","scale.fit52")
+#
+# obtain summary statistics (deviance, residual.df, model.df, over-dispersion estimates (Mean squared Pearson residuals)) for each of the models
+#
+d.pr = cbind(d,pr4,pr42,pr5,pr52)
+dev.all=c(deviance(m4),deviance(m42),deviance(m5),deviance(m52))
+df.resid.all=c(df.residual(m4),df.residual(m42),df.residual(m5),df.residual(m52))
+df.model.all = c(m1$df.null,m42$df.null,m1$df.null,m52$df.null) - df.resid.all
+phi.all=dev.all/df.resid.all
+summary.stats=data.frame(dev=dev.all,df.m=round(df.model.all,0),df.r=round(df.resid.all,0),odp=phi.all)
+rownames(summary.stats) = c("Train1: Model 4","Train2: Model 4","Train1: Model 5","Train2: Model 5")
+print(summary.stats)
+#
+
+
+```
+
+The figure below compares the fitted/predicted total deaths based on the two training 
+datasets and Models 4 and 5.
+
+```{r Display Train1 and Train2,fig.height=4,fig.width=6,echo=FALSE}
+total.deaths.models = d.pr %>% group_by(t) %>% summarise(total.deaths=sum(deaths),total.pop = sum(pop),total.pr4=sum(fit4),total.pr5=sum(fit5),total.pr42=sum(fit42),total.pr52=sum(fit52))
+#
+tick.values.x=c(7,19,31,43,55,67,79,91)
+tick.labels.x=as.character(2011:2018)
+plot(total.deaths.models$t, total.deaths.models$total.deaths,xaxt="n",type="p",pch="o",col="black",xlab="Time (Months)",ylab="Deaths",main="Observed and Predicted Deaths",ylim=c(2000,3200));axis(side = 1, 
+     at = tick.values.x, 
+     labels = tick.labels.x,
+     tck=-.01,cex.lab=0.5);lines(total.deaths.models$t,total.deaths.models$total.pr4,col="green");lines(total.deaths.models$t,total.deaths.models$total.pr5,col="black");abline(v=c(81.5,86.5),col="grey");lines(total.deaths.models$t,total.deaths.models$total.pr42,col="green",lty=2);lines(total.deaths.models$t,total.deaths.models$total.pr52,col="black",lty=2)
+```
+
+### 1. Decomposition of the model results
+
+One question you may have after reviewing the results above is:  why did we see the expected number of monthly deaths decrease over time in the model that only included sine and cosine functions?
+
+The answer is that the total population size is decreasing over time.
+
+To illustrate this I will ignore the information about the strata (seitert, agec and sex variables) for now, since Models 1, 2, and 3 do not depend on these variables.
+
+Let $Y_i$ be the reported number of deaths in Puerto Rico for month $i$, $i = 1, ..., 81$ (the duration of follow-up in the first training data set).
+
+Then recall that our model is:
+
+$$Log(E(Y_i|sine_i,cosine_i)) = Log(N_i \lambda_i) = Log(N_i) + \beta_0 + \beta_1 sine(2 \times \pi \times i/12) + \beta_2 cosine(2 \times \pi \times i/12)$$
+
+So the components that go into predicting/estimating the monthly deaths include the estimate of $\lambda_i$ and $N_i$.
+
+In the code below, I do the following:
+
+ 1. Fit the model above and print the estimates of $\beta_0$, $\beta_1$ and $\beta_2$.
+ 
+ 2.  Make a 4 panel figure that displays:
+
+   * Values of the sine and cosine variables as a function of $t$ (calendar month, expressed as number of months since July 2010).  Here you will see the sine and cosine variables with annual frequency.
+   
+   * Estimates of $\lambda_i$ as a function of $t$.  For plotting purposes, instead of plotting $\lambda_i$ = risk of death per person, I plotted the expected deaths per 10,000 persons.  Here you will see that the estimates of $\lambda_i$ are the same for each month (e.g. January) regardless of year.  This is what we expect from the model fit.
+   
+   * The observed population size ($N_i$) as a function of $t$.  NOTE:  you see that the population size is decreasing over $t$.
+   
+   * The estimated total number of deaths given the population size observed in each month!  Even though $\lambda_i$ is fixed, the same for a given month (e.g. $\lambda_i$ is the same for all Januaries, etc).  Since the population size is decreasing, the expected number of deaths decreases as a function of $t$, i.e. the final figure is plotting $N_i \lambda_i$.  
+   
+```{r sincos,fig.height=7,fig.width=7,echo=FALSE}
+#
+# Make a 4x4 panel of figures
+#
+par(mfrow=c(2,2),mar=c(4,4,4,1))
+#
+#  create a data frame for the training data set
+#
+d.train <- d %>% filter(train1==TRUE)
+#
+# Create cos and sin variables with annual frequencies
+#
+d.train$cos = cos(2*pi*d.train$t/12)
+d.train$sin = sin(2*pi*d.train$t/12)
+#
+# Make a figure of the cos and sin function vs. t
+#
+d.train=d.train[order(d.train$t),]
+plot(d.train$t,d.train$sin,type="l",lty=1,col="red",
+     main="Sine/Cosine variables vs. t",
+     xlab="t(months from July 2010)",
+     ylab="Sin (red) / Cos (blue)",las=1);
+    points(d.train$t,d.train$cos,type="l",lty=1,col="blue")
+
+f1 = deaths~cos+sin
+m1 = glm(data=d.train, 
+         formula=f1,
+         family=quasipoisson(),offset=log(pop),x=TRUE)
+summary(m1)
+#
+# Save the fitted values:  i.e. exp(b0+b1cos+b2sin)*pop
+#
+d.train$fitted = m1$fitted.values
+#
+# Create a variable that is only lambda = exp(b0+b1cos+b2sin)
+#
+d.train$lambda = m1$fitted.values/d.train$pop*10000
+#
+# Plot lambda as a function of calendar time
+#
+plot(d.train$t,d.train$lambda,type="l",lty=1,
+     col="black",main="Lambda vs. t",
+     xlab="t (months from July 2010)",
+     ylab="lambda (per 10000 people)",las=1)
+#
+# Plot the total population size as a function of calendar time
+#
+x = unique(d.train$t)
+y = tapply(d.train$pop,d.train$t,sum)/100000
+plot(x,y,type="l",lty=1,col="black",
+     main="Monthly population size vs. t",
+     xlab="t (months from July 2010)",
+     ylab="Pop size (in 100,000s)",las=1)
+#
+# Plot the predicted total deaths: lambda * population size
+#
+y = tapply(d.train$fitted,d.train$t,sum)
+plot(x,y,type="l",lty=1,col="black",
+     main="Expected deaths vs. t",
+     xlab="t (months from July 2010)",
+     ylab="Expected deaths",las=1)
+```
+
+
+## E. Estimate Hurricane Maria effect 
+
+To estimate the hurricane effect, we calculate the difference between the observed deaths and the predicted (estimated mean) deaths for the six months from Sept, 2017 thru Feb, 2018. 
+
+This difference is  a non-linear function of the models' regression coefficients. The approach is therefore to use **parametric bootstrapping** to estimate the joint mean and covariance matrix of the estimated means for the 6 months and for various linear combinations of them (totals for first 2, 4 and 6 months). 
+
+Here is the process:
+
+ 1. We approximate the joint distribution of the regression coefficients by a Gaussian distribution with mean equal to the maximum likelihood estimate and variance equal to its asymptotic covariance matrix, including the over-dispersion. 
+
+ 2. We take a draw/simulation from this multivariate Gaussian distribution
+ 
+ 3. We sum the exponentials of the simulated log linear predictors to get the expected total deaths absent the hurricane. 
+ 
+ 4. Repeat Steps 2 and 3 many times to obtain a distribution for the expected total deaths absent the hurricane and compute confidence intervals from the empirical distribution of the simulated values.
+ 
+The confidence intervals for a given model condition on it being the "correct model" (which of course does not exist since a model is just a tool to predict the counterfactual of the mortality absent Hurricane Maria). By comparing across the 2 models, we get a sense of the importance of the choice of model in influencing the model-specific causal estimates. 
+
+```{r Estimate hurricane effect and standard errors}
+
+# Create the dataset we need for prediction; 
+# i.e. take the data for the time post hurricane
+
+d.6 = d %>% filter(train2==FALSE)
+
+# Create the model matrices we need for prediction
+# for Models 4 and 5
+m4.matrix= model.matrix(f4,data=d)
+m4.matrix.6 = m4.matrix[d$train2==FALSE,]
+m5.matrix= model.matrix(f5,data=d)
+m5.matrix.6 = m5.matrix[d$train2==FALSE,]
+
+# Name the coefficients and var/cov of coefficients
+# for Models 4 and 5
+mean4=m42$coefficients
+var4=vcov(m42)
+mean5=m52$coefficients
+var5=vcov(m52)
+# 
+#
+#
+# generate B simulated values from the joint distribution 
+# of the 6 predicted total deaths from each model
+#
+set.seed(09202017)
+B=500
+#
+# Generate multivariate Gaussian samples for Models 4 and 5
+#
+bs.coefs4 = mvrnorm(B, mean4, var4)
+bs.coefs5 = mvrnorm(B, mean5, var5)
+#
+results = NULL
+#
+# Run B bootstrap replications
+#
+for ( b in 1:B) {
+  #
+  # generate the linear predictors from 
+  # Models 4 and 5 for the 6 month period during the Hurricane
+  #
+  bs.lp4 = m4.matrix.6 %*% t(bs.coefs4)[,b]
+  bs.lp5 = m5.matrix.6 %*% t(bs.coefs5)[,b]
+  #
+  # Create the predicted numbers of deaths from the linear predictors
+  #
+  d.6$pr4 = exp(bs.lp4)*d.6$pop
+  d.6$pr5 = exp(bs.lp5)*d.6$pop
+  d.6$b = b
+  #
+  temp = d.6[,c("b","deaths","pop","pr4","pr5","sex","sei","age","t")]
+  if(b==1) {results=temp}
+  else {results = bind_rows(results,temp) }
+}    
+#
+# calculate 6, 4, and 2 month totals of predicted values
+#
+results.s6 = results %>% group_by(b,sei,sex,age) %>% 
+  summarise(t = mean(t)+6, deaths=sum(deaths), pop= mean(pop), pr4= sum(pr4), pr5= sum(pr5))
+results.s4 = results %>% filter(.,t<91) %>% 
+  group_by(b, sei, sex, age) %>% 
+  summarise(t = mean(t)+6, deaths=sum(deaths), pop = mean(pop),pr4= sum(pr4),pr5= sum(pr5))
+results.s2 = results %>% filter(.,t<89) %>% 
+  group_by(b, sei, sex, age) %>% 
+  summarise(t= mean(t)+6, deaths=sum(deaths), pop = mean(pop),pr4 = sum(pr4),pr5= sum(pr5))
+results.all = bind_rows(results,results.s6,results.s4,results.s2)
+#
+# calculate for each model: 
+# (1) ratio of the observed to expected numbers of deaths 
+#     expressed as percentage above or below expected; 
+# (2) difference between observed and expected
+#
+results.ext = results.all %>% mutate(
+  rr4=100*(deaths/pr4-1),rr5=100*(deaths/pr5-1),
+  diff4 = deaths - pr4,diff5 = deaths - pr5
+)
+
+#  create table1 summary without stratum
+#
+results.tot = results.ext %>% group_by(t,b) %>% summarise(deaths= sum(deaths), pop= sum(pop), 
+              pr4 = sum(pr4), pr5 = sum(pr5), 
+              rr4 = mean(rr4), rr5 = mean(rr5),
+              diff4 = sum(diff4), diff5 = sum(diff5)
+        )
+#
+table1 = results.tot %>% group_by(t) %>% summarise(
+          deaths = mean(deaths), pop = mean(pop),
+          pr4 = mean(pr4), mean.diff4 = mean(diff4), 
+          cil.diff4 = quantile(diff4,0.025), 
+          ciu.diff4 = quantile(diff4,p=0.975), 
+          mean.rr4 = mean(rr4), 
+          cil.rr4 = quantile(rr4,p=0.025), 
+          ciu.rr4 = quantile(rr4,p=0.975),
+          pr5 = mean(pr5), mean.diff5 = mean(diff5), 
+          cil.diff5 = quantile(diff5,0.025), 
+          ciu.diff5 = quantile(diff5,p=0.975), 
+          mean.rr5 = mean(rr5), 
+          cil.rr5 = quantile(rr5,p=0.025), 
+          ciu.rr5 = quantile(rr5,p=0.975)
+          )
+table1 = table1[,-1]
+#
+colnames(table1)= c("Deaths", "Population",
+                    "Predicted Deaths-Model 4", "Excess Deaths-Model 4",
+                    "CI-Lower","CI-Upper","%Change-Model 4",
+                    "CI-Lower","CI-Upper",
+                    "Predicted Deaths-Model 5", "Excess Deaths-Model 5",
+                    "CI-Lower","CI-Upper","%Change-Model 5",
+                    "CI-Lower","CI-Upper")
+rownames(table1)=c(month.abb[c(9:12,1:2)],"Total:2","Total:4","Total:6")
+table1 = t(round(table1,0))
+#
+write.csv(d.pr,file=paste("./predicted.migrate.total",".csv",sep=""))
+#
+write.csv(table1,file=paste("./results.total",".csv",sep=""))
+#
+#  results by sei
+#
+#  create table1 summary with sei stratum
+#
+results2.tot = results.ext %>% group_by(sei,t,b) %>% 
+  summarise(deaths= sum(deaths), pop= sum(pop), pr4 = sum(pr4), pr5 = sum(pr5), 
+          rr4 = mean(rr4), rr5 = mean(rr5),
+          diff4 = sum(diff4), diff5 = sum(diff5)
+        )
+#
+table2 = results2.tot %>% group_by(sei,t) %>% summarise(
+          deaths = mean(deaths), pop = mean(pop), 
+          pr4 = mean(pr4), mean.diff4 = mean(diff4), 
+          cil.diff4 = quantile(diff4,0.025), 
+          ciu.diff4 = quantile(diff4,p=0.975), 
+          mean.rr4 = mean(rr4), 
+          cil.rr4 = quantile(rr4,p=0.025), 
+          ciu.rr4 = quantile(rr4,p=0.975),
+          pr5 = mean(pr5), mean.diff5 = mean(diff5), 
+          cil.diff5 = quantile(diff5,0.025), 
+          ciu.diff5 = quantile(diff5,p=0.975), 
+          mean.rr5 = mean(rr5), 
+          cil.rr5 = quantile(rr5,p=0.025), 
+          ciu.rr5 = quantile(rr5,p=0.975)
+          )
+table2[,-2] = round(table2[,-2],0)
+table2=t(table2)
+cnames = rep(c(month.abb[c(9:12,1:2)],"Total:2","Total:4","Total:6"),
+             length(unique(d.6$sei)))
+  
+table2 = as.data.frame(table2,row.names = 
+                         c("SEI", "Time","Obs Deaths", "Population",
+                           "Deaths-Model 4", "Excess Deaths-Model 4",
+                           "ED.CIL-4","ED.CIU-4","%Change-Model 4",
+                           "%C.CIL-4","%C.CIU-4",
+                           "Deaths-Model 5", "Excess Deaths-Model 5",
+                           "ED.CIL-5","ED.CIU-5","%Change-Model 5",
+                           "%C.CIL-5","%C.CIU-5")
+)
+colnames(table2) = cnames
+#
+write.csv(table2,file=paste("./results.sei.strata",".csv",sep=""))
+#
+#
+#  create table1 summary with age_sex strata
+#
+results3.tot = results.ext %>% group_by(age,sex,t,b) %>% 
+  summarise(deaths= sum(deaths), pop= sum(pop), 
+            pr4 = sum(pr4), pr5 = sum(pr5), rr4 = mean(rr4), 
+            rr5 = mean(rr5), diff4 = sum(diff4), diff5 = sum(diff5)
+        )
+#
+table3 = results3.tot %>% group_by(age,sex,t) %>% 
+  summarise(
+          deaths = mean(deaths), pop = mean(pop), 
+          pr4 = mean(pr4), mean.diff4 = mean(diff4), 
+          cil.diff4 = quantile(diff4,0.025), 
+          ciu.diff4 = quantile(diff4,p=0.975), 
+          mean.rr4 = mean(rr4), 
+          cil.rr4 = quantile(rr4,p=0.025), 
+          ciu.rr4 = quantile(rr4,p=0.975),
+          pr5 = mean(pr5), mean.diff5 = mean(diff5), 
+          cil.diff5 = quantile(diff5,0.025), 
+          ciu.diff5 = quantile(diff5,p=0.975), 
+          mean.rr5 = mean(rr5), 
+          cil.rr5 = quantile(rr5,p=0.025), 
+          ciu.rr5 = quantile(rr5,p=0.975)
+          )
+table3[,-3] = round(table3[,-3],0)
+table3=t(table3)
+cnames = rep(c(month.abb[c(9:12,1:2)],
+               "Total:2","Total:4","Total:6"),
+             length(unique(d.6$age_sex)))
+  
+table3 = as.data.frame(table3,
+                       row.names = c("Age","Sex","Time",
+                       "Obs Deaths", "Population",
+                       "Deaths-Model 4", 
+                       "Excess Deaths-Model 4",
+                       "ED.CIL-4","ED.CIU-4",
+                       "%Change-Model 4","%C.CIL-4",
+                       "%C.CIU-4",
+                       "Deaths-Model 5", 
+                       "Excess Deaths-Model 5",
+                       "ED.CIL-5","ED.CIU-5",
+                       "%Change-Model 5","%C.CIL-5","%C.CIU-5")
+)
+colnames(table3) = cnames
+#
+write.csv(table3,file=paste("./results.age_sex.strata",".csv",sep=""))
+```
+
+Examine the results
+
+```{r printTable1}
+table1
+```
+
+\newpage
+
+Examine the results by Socioeconomic development level
+
+```{r printTable2}
+table2[,c(9,18,27)]
+```
+
+
+# III. Case study 2
+
+Here we will introduce some key concepts in survival analysis and demonstrate the log-linear models can be used to analyze survival data.
+
+A survival outcome describes when an event of interest occurs, i.e. a cancer patient may experience a recurrence of cancer 6 months after surgery to remove an initial tumor.  The data we get to observe for a patient is: the cancer reoccurred AND that happened at 6 months.
+
+## A. Data
+
+The data contains information about *time to death* for inpatients hospitalized for a severe mental disorder. Survival time from hospitalization is in years. 
+
+In most studies measuring survival time of patients, we don't get to follow patients long enough to see the when the event occurs for all patients.  
+
+Patients for whom we can not follow long enough are "censored".  Censoring can occur for several reasons:  the study period is over; i.e. administrative censoring (you only had the budget to follow persons for so long) or because the patient drops-out of the study.  Another type of censoring can be that the patient experiences another event (e.g. death) that precludes you from being able to observe other events of interest.
+
+In the data, “censor” is 1 if censored; 0 if the patient died; “age” of hospitalization for mental disorder is in years; “male” is 1 for males and 0 for females. 
+
+One question is whether survival is different for men than for women with and without control for age. A listing of the data is:
+
+```{r data}
+d = read.table("./survival.csv",sep=",",header=T)
+d$event = 1 - d$censor
+d
+```
+
+## B. Binned survival data
+
+To analyze the survival data using a log-linear model, the first step is to create “bins” or intervals of time and to determine the person-years and number of deaths in each interval, separately for men and for women or for other strata. 
+
+We focus only on sex to illustrate the application of log-linear models.
+
+We will bin the data by 10-year increments.
+
+```{r bin the data,warning=FALSE,message=FALSE}
+library(survival)
+library(dplyr)
+library(biostat3)
+
+## Cut the survival data into bins of 10 years
+Cutoff <- tcut(rep(0, length(d$survive)),
+               breaks=c(-1,10,20,30,40),
+               labels=c("0-10","11-20","21-30","31-40"))
+
+# We provided argument scale=1 to report patient-years
+py <- pyears(Surv(survive, event) ~ Cutoff + male, data = d,
+             scale = 1,data.frame = TRUE)
+
+# Using the binned data, create the event rate per bin
+binned = py$data
+binned$rate = round(binned$event/binned$pyears,3)
+binned$midp = c(5,15,25,35,5,15,25,35)
+
+# Display the data
+binned
+```
+
+## C. Model definition
+
+Now, we assume a model for the incidence rate or “hazard” of an event in each interval. 
+
+The incidence is the risk per unit time of the event occurring among those that enter the interval.  
+
+The term hazard is usually reserved for the limit of the incidence rate as the interval width goes to zero. We can get a crude estimate by the number of events in the interval divided by the person-time experienced in the interval. For example, we estimate the incidence rate to be 1/25 = 0.04 events per year for 31-40 year old men.
+
+But this is a crude estimate based upon few events. We want to smooth these rates using a log-linear model. 
+
+We assume the incidence rate $\lambda_i$ satisfies a log-linear regression
+
+$$\lambda_i = exp(X^\shortmid_i \beta)$$ 
+ 
+In this example, we will consider two X variables: time represented by the mid-point of each interval and sex. 
+
+The number of events in an interval is assumed to be a Poisson variable since this count is a sum of independent random events assuming each person lives and dies independently of the others (unless of course they are in the same hospital cared for by a gruesome nurse who is systematically “doing-in” patients, but more about that later). The expected number of events in an interval is the rate of events   multiplied by the person-time for which this rate is experienced. Hence, we have  
+
+$$E(Y_i) = \lambda_i PT_i = exp(log(PT_i) + X^\shortmid_i \beta)$$
+
+Here, the term $log(PT_i)$ is called an “offset” because it is added to the linear predictor without needing a regression coefficient. You can think of an offset as a predictor variable whose coeficient is known to be 1. 
+
+\newpage
+
+### 1. Model A
+
+First, we will estimate the overall rate of death; i.e. fit a log-linear model with only an intercept.
+
+$$\text{Model A: }E(Y_i) = \lambda_i PT_i = exp(log(PT_i) + \beta_0)$$
+
+
+```{r modelA}
+fitA = glm(event~1,offset=log(pyears),data=binned,family="poisson")
+summary(fitA)
+fitA$fitted[1]
+lincom(fitA,"(Intercept)",eform=TRUE)
+```
+
+The average squared Pearson residual is 1.26 rather than 1.0. This suggests some over-dispersion. Where would over-dispersion arise from in this model?
+
+To inflate the standard errors, we can use the quasi-poisson family that assumes the variance of each response is proportional to the mean, rather than equal to it. The proportionality constant is the mean squared Pearson residual, phihat. This increases all of the standard errors by sqrt(phihat).
+
+\newpage
+
+```{r modelAquasi}
+fitAq = glm(event~1,offset=log(pyears),data=binned,family="quasipoisson")
+summary(fitAq)
+lincom(fitAq,"(Intercept)",eform=TRUE)
+```
+
+
+What about the *fitted.values* from the model?
+
+We know that to get the expected deaths per bin of time, we would compute:
+
+$$exp(\hat{\beta}_0) PT_i$$
+
+This is what is being computed in the *fitted.values*. 
+
+Confirmation below.
+
+```{r fitted}
+binned$expected = exp(fitAq$coeff[1])*binned$pyears
+cbind(binned,fitAq$fitted.values)
+```
+
+\newpage
+
+### 2. Model B
+
+In the next model, we estimate the relative risk of death comparing men to women. 
+
+$$\text{Model B: } E(Y_i) = \lambda_i PT_i = exp(log(PT_i) + \beta_0 + \beta_1 male_i)$$
+
+```{r modelB}
+fitB = glm(event~1+male,offset=log(pyears),data=binned,family="quasipoisson")
+summary(fitB)
+fitB$fitted[binned$male==1][1]
+fitB$fitted[binned$male==0][1]
+lincom(fitB,c("(Intercept)","(Intercept)+male","male"),eform=TRUE)
+```
+
+We estimate that the risk for a man is `r round(exp(fitB$coeff[2]),2)` as great as for a woman (that is 59% less). However, the analysis also shows that the uncertainty in this relative rate is substantial. In fact, the hypothesis that the risk is the same for men and women is reasonably consistent with the observations.
+
+\newpage
+
+### 3. Proportional hazards models
+
+A priori, we would expect the hazard of death to depend on how long one has been in the hospital since we do not live forever. Models C and D estimate the relative risk of death for men as compared to women, controlling for a time-varying baseline hazard. 
+
+NOTE:  In survival analysis, we refer to the "baseline hazard" as the hazard function when setting exposure variables $X_i = 0$.
+
+$$E(Y_i) = \lambda_i PT_i = exp(log(PT_i) + f(time_i) + X_i^\shortmid \beta)$$
+
+In the above, when we set $X_i = 0$ then we are describing the "baseline hazard" which is some function of $time_i$.
+
+We will consider two models for the "baseline hazard": a linear function of the midpoint of each time interval and a step function representing each time interval.
+
+$$\text{Model C: } E(Y_i) = \lambda_i PT_i = exp(log(PT_i) + \beta_0 + \beta_1 midp_i + \beta_2 male_i)$$
+
+$$\text{Model D: } E(Y_i) = \lambda_i PT_i = exp(log(PT_i) + \beta_0 + \beta_1 I(midp_i = 15) + \beta_2 I(midp_i = 25) + \beta_3 I(midp_i = 35) + \beta_4 male_i)$$
+NOTE: Both of these models are examples of proportional hazards models because we assume that the risk for a man equals the risk for a women times a constant that is the same at all periods. Said another way, the ratio of risks for men versus women is constant over time. The two models C and D differ in how they control for period.
+
+```{r modelC}
+fitC = glm(event~1+male+midp,offset=log(pyears),data=binned,family="quasipoisson")
+summary(fitC)
+lincom(fitC,"male",eform=TRUE)
+tapply(fitC$fitted,list(binned$male,binned$midp),mean)
+```
+
+```{r modelD}
+fitD = glm(event~1+male+as.factor(midp),offset=log(pyears),data=binned,family="quasipoisson")
+summary(fitD)
+lincom(fitD,"male",eform=TRUE)
+tapply(fitD$fitted,list(binned$male,binned$midp),mean)
+```
+
+Interpret the effect of "male":
+
+\vspace{3cm}
+
+
+### 4. Non-proportional hazards
+
+In the final model, we look for evidence that the relative rate for men as compared to women changes over the duration of follow-up, that is, we look for evidence that the proportional hazards assumption is inadequate for our data. In this final model, we choose to center the midpoint variable at 20 years duration so that the male coefficient has a more reasonable interpretation.
+
+$$\text{Model E: } E(Y_i) = \lambda_i PT_i = exp(log(PT_i) + \beta_0 + \beta_1 (midp_i - 20) + \beta_2 male_i + \beta_3 (midp_i - 20) male_i)$$
+
+
+```{r modelE}
+binned$midc = binned$midp - 20
+fitE = glm(event~1+male*midc,offset=log(pyears),data=binned,family="quasipoisson")
+summary(fitE)
+lincom(fitE,c("male-15*male:midc","male-5*male:midc","male+5*male:midc","male+15*male:midc"),eform=TRUE)
+tapply(fitE$fitted,list(binned$male,binned$midp),mean)
+```
+
+What can you conclude about the proportional hazards assumption?
+
+```{r summaryfigure,fig.height=6,fig.width=6,echo=FALSE}
+predL.C = predict(fitC,binned,type="response")/binned$pyears
+predL.D = predict(fitD,binned,type="response")/binned$pyears
+predL.E = predict(fitE,binned,type="response")/binned$pyears
+
+par(mfrow=c(2,1),mar=c(4,4,1,1))
+plot(binned$midp-3,binned$rate,pch=20,cex=1.2,xlim=c(0,40),
+     ylim=c(0,.1),las=1,ylab="Lambda",xlab="Mid-point of Time Bin")
+points(binned$midp-1,predL.C,pch=20,cex=1.2,col="red")
+points(binned$midp+1,predL.D,pch=20,cex=1.2,col="blue")
+points(binned$midp+3,predL.E,pch=20,cex=1.2,col="green")
+legend(0,0.1,c("Observed","Model C","Model D","Model E"),cex=0.5,col=c("black","red","blue","green"),pch=rep(20,4),bty="n")
+y = log(binned$rate)
+y = ifelse(binned$rate==0,-7,y)
+plot(binned$midp-3,y,pch=20,cex=1.2,xlim=c(0,40),
+     ylim=c(-7,-2),las=1,ylab="Log(Lambda)",xlab="Mid-point of Time Bin")
+points(binned$midp-1,log(predL.C),pch=20,cex=1.2,col="red")
+points(binned$midp+1,log(predL.D),pch=20,cex=1.2,col="blue")
+points(binned$midp+3,log(predL.E),pch=20,cex=1.2,col="green")
+```
+
+
+### 5. Summary
+
+Here are some main points from the analysis
+
+ 1. We have used Poisson regression models for the number of deaths by decade of year in the hospital to estimate the relative risk of death for men as compared to women. 
+ 
+ 2. The overall rate of death in this small group of 26 people is estimated to be 2% per year (95% CI: 1.1, 3.8% per year). 
+ 
+ 3. The rate for men is estimated to be 0.41 times that for women (95% CI: 0.13, 1.3). The evidence is not sufficiently strong to conclude men and women have different rates. 
+ 
+ 4. There is also a suggestion that the relative risk increases toward 1.0 with increasing duration of follow-up.
+
+Some additional questions for you to consider:
+
+ * This analysis has considered sex and 10-year increment of hospitalization as important variables in understanding risk of death over time.
+ 
+ * What other key variable is missing?
+ 
+ * How would you incorporate this variable into the analysis?
+ 
+ 

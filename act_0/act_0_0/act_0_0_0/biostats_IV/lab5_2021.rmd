@@ -1,0 +1,347 @@
+---
+title: "140.654 Lab 5"
+author: "Erjia Cui and Elizabeth Colantuoni"
+output: html_document
+---
+
+### Objectives
+
+For this lab session, we will:
+
+* Construct visualization of trends in binary responses over time using proportions vs. time plot and lasagna plot.
+* Use the paired log odds ratio as a measure of correlation for repeated binary outcomes.
+* Fit a marginal logistic regression model using geeglm and compute relevant Wald tests and linear combinations of coefficients.
+* Compare the results of statistical tests under different correlation assumptions.
+
+```{r,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(plyr)
+
+# lasgna plot
+library(fields)
+# library(devtools)
+# install_github("swihart/lasagnar")
+library(lasagnar)   
+library(reshape2)
+library(RColorBrewer)
+library(colorspace)  
+
+# Lorelogram
+library(RCurl)
+library(maps)
+library(spam)
+library(scales)
+library(gtable) 
+
+# gee
+library(geepack)
+library(doBy)
+
+stroke = read.csv('./stroke_trial.csv')
+```
+
+### Exploratory analysis and Specification of marginal logistic regression models
+
+__Background__
+
+You are involved with a randomized control trial of a new surgical procedure vs. standard medical care for the treatment of stroke.  The goal is to improve functional disability among the stroke patients.  The trial will use a scale that rates the patients’ functional disability including mortality status.  We will consider a binary representation of the scale such that a 1 indicates “little to no disability” and 0 indicates “moderate to severe disability or death.”
+
+The functional disability is assessed at baseline (time = 0) and then at 6, 12 and 18 months.
+
+The simulated data consists of 200 patients and four repeated measurements for each patient:
+	
+*	A = treatment assignment, 0 = standard medical care, 1 = surgical intervention
+*	Y = binary indicator for functional disability, 0 = moderate to severe disability or death, 1 = little to no disability
+*	Time = 0, 6, 12, and 18 months.
+
+
+__Objective of the trial__
+
+The objective of the trial is to determine if the prevalence of “little to no disability” over time differs across the treatment groups; with larger improvements over time in functional disability for patients receiving the new surgical procedure.
+
+
+__Exploratory analysis__
+
+__1. Create a tabular and graphical display of the prevalence of “little to no disability” at each follow-up for each treatment group.__
+
+```{r}
+str(stroke)
+head(stroke)
+tapply(stroke$y,list(stroke$A,stroke$time),mean) #?tapply: Apply a function to each cell of a ragged array, that is to each (non-empty) group of values given by a unique combination of the levels of certain factors.
+
+# double check with value 0.22
+sub <- stroke[stroke$A == 0 & stroke$time == 18,]
+sum(sub$y) / nrow(sub)
+```
+
+The rows are treatment assignment, columns are follow-up time and each value in table is the proportion of $y = 1$ in that subgroup.
+
+```{r}
+summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
+                      conf.interval=.95, .drop=TRUE) {
+
+    # New version of length which can handle NA's: if na.rm==T, don't count them
+    length2 <- function (x, na.rm=FALSE) {
+        if (na.rm) sum(!is.na(x))
+        else       length(x)
+    }
+
+    # Summary statistics:For each group's data frame, return a vector with
+    # N, mean, and sd
+    datac <- ddply(data, groupvars, .drop=.drop,
+      .fun = function(xx, col) {
+        c(N    = length2(xx[[col]], na.rm=na.rm),
+          mean = mean   (xx[[col]], na.rm=na.rm),
+          sd   = sd     (xx[[col]], na.rm=na.rm)
+        )
+      },
+      measurevar
+    )
+
+  # Rename the "mean" column    
+    datac <- rename(datac, c("mean" = measurevar))
+
+    datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+
+    # Confidence interval multiplier for standard error
+    # Calculate t-statistic for confidence interval: 
+    # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+    ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+    datac$ci <- datac$se * ciMult
+
+    return(datac)
+}
+
+sumdat <- summarySE(data = stroke, measurevar="y", groupvars=c("A","time"))
+sumdat
+pd <- position_dodge(1) # move them .5 to the left and right
+ggplot(sumdat, aes(x=time, y=y, colour=factor(A), group=factor(A))) + 
+    	geom_errorbar(aes(ymin=y-ci, ymax=y+ci), width=.1, position=pd) +
+    	geom_line(position=pd) +
+    	geom_point(position=pd) +
+    theme_classic()+
+    scale_color_discrete(name = 'Treatment Assignment') +
+    labs(y='prevalence of little to no disability')
+
+```
+
+
+Observation: Although the prevalence estimates at each time point after the baseline visit are higher for subjects receiving the new surgical procedure ($A=1$), as compared to subjects receiving the standard of care ($A=0$), the 95\% CI for both groups overlap with one another at each time point.   
+
+__2. Lasagna Plot__
+
+The lasagna plot is a “saucy alternative to spaghetti plots” for longitudinal categorical outcomes.  The goal is to visualize the trajectories of responses over time but where the responses are categorical.  The lasagna plot is constructed with a separate line for each subject; this line is color coded based on the observed response for that subject at each time point.  These subject specific lines are then sorted and stacked to allow you to understand common patterns of how the subject’s responses changed over time.  With categorical responses, there are a discrete number of potential trajectories.   References:
+https://github.com/swihart/lasagnar; http://www.ncbi.nlm.nih.gov/pmc/articles/PMC2937254/.
+
+```{r, fig.height=5, fig.width=7}
+### 1. reshape to wide format
+stroke_wide <- reshape(stroke[, colnames(stroke) != "followup"], timevar = c("time"), idvar = c("id","A"), direction = "wide")
+row.names(stroke_wide) = stroke_wide$id
+
+head(stroke_wide)
+
+### 2. plot lasagna plot
+par(mfrow=c(1,2))
+# set up colors
+palette <- brewer.pal(6, "Set1")[2:3]
+# 1) sort subjects according to their trajectories (group similar trajectories together)
+stroke_wide_sorted <- stroke_wide[order(stroke_wide[,"y.0"], stroke_wide[,"y.6"], stroke_wide[,"y.12"], stroke_wide[,"y.18"]), ]
+head(stroke_wide_sorted)
+
+# 2) plot lasagna for control group
+lasagna(stroke_wide_sorted[stroke_wide_sorted$A == 0,c("y.0","y.6","y.12","y.18")],col = palette, 
+	main = "Lasagna plot, ctrl", legend = T, cex=1)
+# 3) plot lasagna for treatment group
+lasagna(stroke_wide_sorted[stroke_wide_sorted$A == 1,c("y.0","y.6","y.12","y.18")], col = palette, 
+	main = "Lasagna plot, trt", legend = T, cex=0.8)
+```
+
+The rows are ids and columns are the timepoints. From eye-balling, we could observe that:
+
+1. Overall trend
+
+* In the control group, around 60\% of the patients receiving standard medical care remain with “moderate to severe disability or death” for the entire study (look for all blue pattern row-wise).
+ 
+* In the treatment group, around 50\% of the patients receiving the new surgical group remain with “moderate to severe disability or death” for the entire study (look for all blue pattern row-wise).
+ 
+2. Transition from “moderate to severe disability or death” to “little to no disability” (blue to green row-wise):
+ 
+* Roughly 45% of the patients in the new surgical group move from “moderate to severe disability or death” to “little to no disability” at least once during the course of the study. Same proportion of patients transition at each of the post baseline follow-ups.
+ 
+* Roughly 35% of the patients receiving standard medical care move from “moderate to severe disability or death” to “little to no disability” at least once during the course of the study. Same proportion of patients transition at each of the post baseline follow-ups.
+
+
+__3. Compute the pairwise odds ratio as a measure of correlation__
+
+For binary variables, one can compute a correlation coefficient but it is hard to interpret.  An alternative to computing the correlation coefficient for longitudinal binary data is to compute the pairwise odds ratio as a measure of correlation.
+
+```{r}
+or_calc <- function(tbl){
+    
+    tbl[1,1]*tbl[2,2]/(tbl[1,2]*tbl[2,1])
+}
+
+or_mat <- matrix(NA,nrow=3,ncol=3)
+colnames(or_mat) <- paste0('time=',c(6,12,18))
+rownames(or_mat) <- paste0('time=',c(0,6,12))
+
+or_mat[1,1] <- or_calc(table(stroke_wide[,c("y.0","y.6")]))
+or_mat[1,2] <- or_calc(table(stroke_wide[,c("y.0","y.12")]))
+or_mat[1,3] <- or_calc(table(stroke_wide[,c("y.0","y.18")]))
+or_mat[2,2] <- or_calc(table(stroke_wide[,c("y.6","y.12")]))
+or_mat[2,3] <- or_calc(table(stroke_wide[,c("y.6","y.18")]))
+or_mat[3,3] <- or_calc(table(stroke_wide[,c("y.12","y.18")]))
+
+or_mat %>% round(2)
+```
+
+__4. Lorelogram__
+
+```{r,echo=FALSE}
+# Draws a lorrelogram when provided three columns,
+# id = patient or cluster ids
+# time = time of measurement
+# y = binary outcome
+# title = title for the plot produced.
+
+lorelogram <- function(id, time, y, title){
+  data <- data_frame(id,time,y)
+
+  #function that innumerates all combinations of a given time
+  #and all futures times for an individual and then
+  #returns a dataframe of time differences and results at both time points
+  calc_time_deltas <- function(ind_data){
+    results <- expand.grid(ind_data$time,ind_data$time) %>%
+      dplyr::rename(time1 = Var1, time2 = Var2) %>%  #rename columns to meaningful stuff
+      right_join(ind_data[,c("time", "y")], by = c("time1" = "time")) %>%
+      dplyr::rename(y1 = y) %>%  #add results for time1 from the full data
+      right_join(ind_data[,c("time", "y")], by = c("time2" = "time")) %>%
+      dplyr::rename(y2 = y) %>%  #add results for time2 from the full data.
+      mutate(time_diff = time1 - time2, id = ind_data$id[1]) %>% #find difference in times
+      filter(time_diff > 0) %>%  #only interested in positive times.
+      select(time_diff, y1, y2)  #cleanup output.
+  }
+
+  Z <- data %>%
+    group_by(id) %>% #grab an individuals data in isolation
+    do(calc_time_deltas(.)) #run the immumeration function
+
+  #Predict past outcomes from future by utilizing time differences
+  outcome_model <- glm(y1 ~ y2:factor(time_diff), data=Z, family=binomial)
+
+  #grab the parameter estimates (ignoring intercept)
+  LOR_estimates <- data_frame(
+    time_diff = sort(unique(Z$time_diff)),
+    point_est = summary(outcome_model)$coef[-1,1],
+    std_err = summary(outcome_model)$coef[-1,2] ) %>%
+    mutate(lower_bound = point_est - 1.96*std_err,
+           upper_bound = point_est + 1.96*std_err)
+
+  #plot it
+  ggplot(LOR_estimates, aes(x = time_diff)) +
+    theme_classic() +
+    geom_ribbon(aes(ymin = lower_bound, ymax = upper_bound, fill = "95 % CI"),
+                alpha = 0.5) +
+    geom_line(aes(y = point_est, color = "point estimate")) +
+    scale_colour_manual("",values="black")+
+    scale_fill_manual("",values="steelblue") +
+    labs(x = "time change", y = "Log Odds Ratio", title = title)
+}
+```
+
+
+```{r, eval=FALSE}
+script <- getURL("https://raw.githubusercontent.com/nstrayer/nviz/master/R/lorelogram.R", ssl.verifypeer = FALSE)
+eval(parse(text = script))
+```
+
+```{r,warning=FALSE}
+lorelogram(id = stroke$id, time = stroke$time, y = stroke$y, title="Lorelogram: Stroke Trial")
+```
+
+The lorelogram displays a decreasing function with increasing lag.  A good candidate working correlation model would be the AR1.
+
+__5. Specify a marginal logistic regression model for this study.__
+
+Specify three parts: Mean model, Variance (diagonal), Covariance/correlation (off-diagonal).
+
+![](lab5_model.png)
+
+```{r}
+stroke$time6xA <- (stroke$time==6)*stroke$A
+stroke$time12xA <- (stroke$time==12)*stroke$A
+stroke$time18xA <- (stroke$time==18)*stroke$A
+
+## Model 1: AR(1)
+## gee: time and interaction time-treatment
+fit <- geeglm(y~as.factor(time)+time6xA+time12xA+time18xA,data=stroke,family="binomial",corstr="ar1",id=id)
+summary(fit)
+
+## gee: time only
+fit0 <- geeglm(y~as.factor(time),data=stroke,family="binomial",corstr="ar1",id=id)
+anova(fit,fit0) # nested
+
+## Get the linear contrasts of interest, 
+## for A = 1: e.g. beta_time=6 + beta_time6xA, etc.
+L <- rbind(c(0,1,0,0,1,0,0),c(0,0,1,0,0,1,0),c(0,0,0,1,0,0,1))
+exp(esticon(fit,L))
+```
+
+The esticon in 'doby' R package: Computes linear functions (i.e. weighted sums) of the estimated regression parameters. Can also test the hypothesis, that such a function is equal to a specific value. 
+
+esticon(obj, L, beta0, conf.int = TRUE, level = 0.95,
+  joint.test = FALSE, ...)
+  
+Intepretation of the result:
+
+ * In the surgical intervention group (A=1), the odds of little to no disability at 6-, 12- and 18-months are 4.43 (2.52 – 7.78), 4.20 (2.24 – 7.87) and 6.54 (3.27 – 13.08) times the odds of little to no disability at baseline, respectively.
+ 
+ * In the usual care group, the odds of little to no disability at 6-, 12- and 18-months are 2.92 (95%CI: 1.50 – 5.65), 2.16 (1.02 – 4.59) and 3.74 (1.84 – 7.62) times the odds of little to no disability at baseline, respectively.
+ 
+ * However, our hypothesis test for any difference in the change in odds of little to no disability post-baseline comparing the two treatment groups yields a p-value of 0.13.  Therefore, at the alpha = 0.05 level, in our study the surgical intervention was not statistically superior to usual care.
+
+
+__6. Model comparisons__
+
+Different assumptions for within-subject variation:
+
+* Model 1: AR(1) correlation structure
+* Model 2: Independence correlation structure with robust variance estimation
+* Model 3: Logisitic regression - Independence (without robust variance estimation)
+
+The hypothesis test is the same:  test for any difference in the change in odds of little to no disability post-baseline comparing the two treatment groups.
+
+```{r}
+## Model 2: independence model with robust variance
+fit2 <- geeglm(y~as.factor(time)+time6xA+time12xA+time18xA,data=stroke,family="binomial",corstr="independence",id=id)
+summary(fit2)
+fit20 <- geeglm(y~as.factor(time),data=stroke,family="binomial",corstr="independence",id=id)
+anova(fit2,fit20)
+```
+
+
+```{r}
+## Model 3: independence model, no robust variance
+fit3 <- glm(y~as.factor(time)+time6xA+time12xA+time18xA,data=stroke,family="binomial")
+summary(fit3)
+fit30 <- glm(y~as.factor(time),data=stroke,family="binomial")
+test <- anova(fit30,fit3,test="Chisq")
+pchisq(test$Deviance[2],df=test$Df[2],lower.tail=FALSE)
+```
+
+Observations:
+
+* Our estimated regression parameters are similar despite different assumptions of working correlation structure:
+
+```{r}
+est <- cbind(summary(fit)$coef[,1:2],
+summary(fit2)$coef[,1:2],
+summary(fit3)$coef[,1:2])
+colnames(est) <- paste0(rep(paste0('Model',1:3),each=2),':',rep(c('Est','SE'),2))
+est
+```
+
+* If we had assumed working independence, our hypothesis test for a treatment effect would have been marginally significant (p = 0.05)
+* Assuming working independence with the addition of a robust variance estimate, our hypothesis test for a treatment effect was similar to that obtained by the AR1 model (p = 0.15).
+

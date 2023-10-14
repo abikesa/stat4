@@ -1,0 +1,453 @@
+---
+title: "Lecture 9 Handout"
+author: "Elizabeth Colantuoni"
+date: "4/26/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(gee)
+library(MESS)
+library(splines)
+library(knitr)
+library(lme4)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+```
+
+# I. Objectives:
+
+Upon completion of this session, you will be able to do the following:
+
+* Check consistency of observed data with assumptions for a logistic regression model
+
+* Compare ordinary and conditional logistic regression models
+
+* Understand and explain the difference between marginal (population-average) and conditional (subject-specific) logistic regression coefficients
+
+* Understand, explain and use conditional logistic regression with application to case-control or longitudinal studies
+
+# II. Logistic Regression Model Assumptions
+
+Recall, the key assumptions from the model by order of importance:
+
+1. We **assume** that $logit[Pr(Y=1|X)]$ is given by $X_{n\times(p+1)} \beta_{(p+1)\times1}$.  There can be violations of this assumption including missing predictors, wrong functional form (e.g. linear vs. non-linear functions), missing interactions and errors in predictors.  **Violations of this assumption affect/bias $\beta$**
+
+2. $Y_i$ and $Y_j$ are independent of each other.  There can be violations of this assumption if the data is generated via a clustered or longitudinal design. **Violations of this assumption can affect inference for $\beta$**
+
+3.  $Var(Y_i | X) = \mu_i(\beta) (1 - \mu_i(\beta))$ **Violations of this assumption may be addressed via weighted least squares or robust variance estimation**
+
+5. A small fraction of data has high influence on the model fit. **Violations of this assumption can affect estimation and inference on $\beta$**
+
+In this lecture, we will focus on violations of the independence assumption.  See Lab 2 for a review of diagnostic procedures and approaches for handling the other assumptions. 
+
+# III. Two examples: a longitudinal and clustered design
+
+In this lecture we will discuss two additional extensions to logistic regression models; both relating to "clustered" or "longitudinal" data: **marginal logistic regression models** and **conditional logistic regression models**.
+
+We will discuss the extensions within the context of two examples:
+
+ 1. A placebo-controlled trial to improve respiratory function.  Example extracted from Fitzmaurice, Laird and Ware, Applied Longitudinal Analysis (2nd edition).  111 patients from 2 clinics were randomized to receive active or placebo treatment to treat respiratory illness. The response, respiratory status (1 = good, 0 = bad), was measured at baseline and four follow-up visits during treatment. 
+
+ 2. A matched case-control study was conducted by Mack et al. (1976) to study the effect of exogenous estrogens on the risk of endometrial cancer. It comprises 63 matched sets with one case and 4 controls per set. Controls were matched by being alive in the same community at the time of diagnosis for the case, having age within 1-year, same marital status and entering the community at roughly the same time. Controls could not have had a hysterectomy in which case they would not have been at risk of endometrial cancer. These data were made famous by the groundbreaking two volumes by Breslow and Day entitled Statistical Methods in Cancer Research. Chapters V and VI are excellent overviews of statistical methods for matched case-control studies.  The scientific question is whether women who use estrogens, have a history of gall-bladder disease or hypertension were at increased risk of endometrial cancer. 
+
+In both examples, the outcome is binary, e.g. respiratory status (1 = good, 0 = bad) and case vs. control (1 = endometrial cancer patient, 0 = matched control without endometrial cancer).
+
+Define $Y_{ij} = 0 \text{ or } 1$ where $i$ defines the cluster (e.g. individual for the placebo-controlled trial and matched case/control set), $i = 1, ..., m$ and $j$ indexes the units within the cluster (e.g. time for the placebo-controlled trial and individuals for the matched case/control study), $j = 1, ..., n_i$.  
+
+# IV. Marginal logistic regression models
+
+## A. Review of generalized linear models
+
+Recall that generalized linear models are a class of regression models for an outcome variable whose distribution belongs to the exponential family of distributions.
+
+To specify a generalized linear model, we are required to define:
+
+  * The distribution of $Y$, which includes a definition of $\mu = E(Y)$ and $Var(Y)$.  There may be natural bounds on $\mu$.
+  
+  * A linear model: $g(\mu) = X_i^\shortmid beta$
+  
+  * A link function $g(\mu)$ and inverse link function, $g^{-1}(X_i^\shortmid \beta)$ that allows us to translate to and from the linear model and the natural bounds for $\mu$.
+  
+Generalized linear models assume that observations $Y_i$ are independent and we showed that for logistic regression the score equation is given by:
+
+\begin{tabular}{rcl}
+$U(\beta)$ & = &  $X^\shortmid (Y - \mu(\beta))$ \\
+& & \\
+& = & $\left(\frac{\partial \mu}{\partial \beta}\right)^\shortmid V^{-1} (Y-\mu(\beta))$ \\
+& & \\
+& = & $\displaystyle \sum_{i = 1}^{n} \left(\frac{\partial \mu_i}{\partial \beta}\right)^\shortmid V_i^{-1} (Y_i-\mu_i(\beta))$
+\end{tabular}
+
+where $\frac{\partial \mu}{\partial \beta} = VX$, $V = diag\left[\mu(\beta) (1-\mu(\beta))\right]$, $V_i = \mu_i(\beta) (1-\mu_i(\beta))$.
+
+## B. Marginal generalized linear models
+
+The **marginal** generalized linear model allows us to formulate a similar regression model but account for the correlation of observations nested within clusters.  To specify a marginal generalized linear model, we provide/assume:
+
+  * $Y_{i.}$ independent of $Y_{k.}$ for all nested values within clusters; i.e. clusters are independent. 
+
+  * The distribution of $Y_{ij}$, which includes a definition of $\mu_{ij} = E(Y_{ij}|X_{ij})$ and $Var(Y_{ij}) = f(\mu_{ij})$.  There may be natural bounds on $\mu$.
+  
+  * A model for $Corr(Y_{ij},Y_{ik})$,e.g. an exchangeable model where $Corr(Y_{ij},Y_{ik}) = \alpha$
+
+  * The above two assumptions define a variance matrix for cluster $Y_{i}$ data, $V_{n_i \times n_i} = V(\beta, \alpha)$.  This matrix is NOT a diagonal matrix; it contains the $Var(Y_{ij})$ on the diagonal elements and off diagonal elements are $Cov(Y_{ij},Y_{ik})$.
+  
+  * A linear model: $g(\mu_{ij}) = X_{ij}^\shortmid \beta$
+  
+  * A link function $g(\mu_{ij})$ and inverse link function, $g^{-1}(X_{ij}^\shortmid \beta)$ that allows us to translate to and from the linear model and the natural bounds for $\mu$.
+
+With making no additional assumptions, we can utilize the generalized estimating equations (GEE) approach to estimate and make inference for $\beta$.  Namely, we solve for $\beta$ using the following estimating equation (i.e. score equation):
+
+$$\displaystyle \sum_{i = 1}^{m} \left[ \frac{\partial \mu_i}{\partial \beta} \right]^\shortmid V_i^{-1} (Y_i - \mu_i(\beta)) = 0$$
+
+NOTE:  This looks like the score equation for generalized linear models but there is a different $V$.
+
+## C. Interpretation 
+
+The coefficients from marginal models have "population-average" or "population-level" interpretations.  That is, the goal of this analysis is to compare $\mu_{ij}$ across subsets of clusters or units within clusters based on levels of exposures.
+
+## D. Example
+
+We will fit a marginal logistic regression model to the data generated from the placebo-controlled trial for respiratory function.
+
+The data are $Y_{ij} = 1 \text{ or } 0$ defining a good or bad respiratory response, respectively, for patient $i$ at assessment $j$.  Assessments occurred at baseline (prior to randomization, $j = 0$) and then at four follow-up assessments ($j = 1, 2, 3, 4$).  The primary covariates are time (i.e. $j$) and treatment (trtmnt01, 1 = active, 0 = placebo).
+
+
+```{r marginal,fig.height=3,fig.width=6,echo=FALSE}
+## Read in the stroke_trial.csv file
+d <- read.table("./respiratory.csv",sep=",",header=T)
+
+## Reshape the data to long
+data = reshape(d,varying=2:6,ids=1:111,direction="long",v.names="r")
+data = data[order(data$id,data$time),]
+
+## Tabular and graphical display of the prevalence
+tapply(data$r,list(data$trtmnt01,data$time),mean)
+
+
+summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
+                      conf.interval=.95, .drop=TRUE) {
+
+    # New version of length which can handle NA's: if na.rm==T, don't count them
+    length2 <- function (x, na.rm=FALSE) {
+        if (na.rm) sum(!is.na(x))
+        else       length(x)
+    }
+
+    # This does the summary. For each group's data frame, return a vector with
+    # N, mean, and sd
+    datac <- ddply(data, groupvars, .drop=.drop,
+      .fun = function(xx, col) {
+        c(N    = length2(xx[[col]], na.rm=na.rm),
+          mean = mean   (xx[[col]], na.rm=na.rm),
+          sd   = sd     (xx[[col]], na.rm=na.rm)
+        )
+      },
+      measurevar
+    )
+
+  # Rename the "mean" column    
+    datac <- rename(datac, y = mean)
+
+    datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+
+    # Confidence interval multiplier for standard error
+    # Calculate t-statistic for confidence interval: 
+    # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+    ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+    datac$ci <- datac$se * ciMult
+
+    return(datac)
+}
+
+sumdat = summarySE(data, measurevar="r", groupvars=c("trtmnt01","time"))
+pd <- position_dodge(1) # move them .5 to the left and right
+ggplot(sumdat, aes(x=time, y=y, colour=trtmnt01, group=trtmnt01)) + 
+    	geom_errorbar(aes(ymin=y-ci, ymax=y+ci), width=.1, position=pd) +
+    	geom_line(position=pd) +
+    	geom_point(position=pd)    
+```
+
+Based on the exploratory analysis, we propose the following model: Patients are independent and  $Y_{ij} \sim Bernoulli(\mu_{ij})$ implying that $Var(Y_{ij}) = \mu_{ij} (1 - \mu_{ij})$ and 
+
+$$logit[Pr(Y_{ij}=1|post_{ij},trtmnt01_i)] = \beta_0 + \beta_1 post_{ij} + \beta_2 post_{ij} \times trtmnt01_i$$
+where $post_{ij} = I(time_{ij} > 0)$.
+
+Interpretation of the coefficients:
+
+  * $\beta_0$: log odds of a good respiratory response at baseline
+  
+  * $\beta_1$: log odds ratio of a good respiratory response comparing follow-up to baseline among patients receiving the placebo
+  
+  * $\beta_1 + \beta_2$: log odds ratio of a good respiratory response comparing follow-up to baseline among patients receiving the active treatment
+  
+  * $\beta_2$: treatment effect!  Does the relative improvement in the odds of a good response comparing follow-up to baseline differ for the patients receiving active treatment vs. placebo
+  
+We aren't done yet!  We need to make an assumption about the within patient correlation!  
+
+One way to measure association between two binary responses is to compute a paired odds ratio:
+
+$$OR(Y_{ij},Y_{ik}) = \frac{Pr(Y_{ij}=1,Y_{ik}=1)Pr(Y_{ij}=0,Y_{ik}=0))}{Pr(Y_{ij}=1,Y_{ik}=0)Pr(Y_{ij}=0,Y_{ik}=1))}$$
+
+This can be computed for each pairwise combination of $j$ and $k$ or as a function of the lag, i.e. $|j-k|$.
+
+For more details, interested students should read "Lorelogram: A Regression Approach to Exploring Dependence in LongitudinalCategorical Responses" by Patrick J. Heagerty and Scott L. Zeger (Journal of the American Statistical Association, 1998, Vol. 93, No. 441, pp. 150-162.).
+
+\newpage
+
+```{r lorelogram,fig.height=3,fig.width=6,message=FALSE,warning=FALSE}
+# Load the lorelogram function, which was downloaded from
+#"https://raw.githubusercontent.com/nstrayer/nviz/master/R/lorelogram.R"
+source("lorelogram.R")
+lorelogram(data$id,data$time,data$r,title="Lorelogram: Respiratory Infection Trial")
+```
+
+Using the lorelogram, it is reasonable to assume an exchangeable correlation structure (you could also try AR1)
+
+```{r fitmarginal}
+data$post = ifelse(data$time>1,1,0)
+data$postXtrt = data$post * data$trtmnt01
+fit.exch = gee(r~post+post:trtmnt01,data=data,
+        family="binomial",corstr="exchangeable",id=id)
+summary(fit.exch)
+```
+
+```{r ignorecluster}
+fit.ind = gee(r~post+postXtrt,data=data,
+              family="binomial",corstr="independence",
+              id=id)
+summary(fit.ind)$coefficients
+```
+
+Compare the coefficients and estimates:
+
+```{r compare,echo=FALSE}
+junk = summary(fit.exch)$coeff
+marg = cbind(exp(junk[,1]),exp(junk[,1]-2*junk[,2]),exp(junk[,1]+2*junk[,2]),exp(junk[,1]-2*junk[,4]),exp(junk[,1]+2*junk[,4]))
+junk = summary(fit.ind)$coeff
+ind = cbind(exp(junk[,1]),exp(junk[,1]-2*junk[,2]),exp(junk[,1]+2*junk[,2]),exp(junk[,1]-2*junk[,4]),exp(junk[,1]+2*junk[,4]))
+out = as.data.frame(cbind(marg,ind))
+names(out) = c("Marg","Marg LL","Marg UL",
+               "MargR LL","MargR UL",
+               "Ind", "Ind LL","Ind UL",
+               "IndR LL","IndR UL")
+round(out,3)
+```
+
+
+# V. Random effects models
+
+## A. Model definition
+
+As an alternative to the marginal model described in Section IV, we could consider a random effects or conditional model.
+
+In conditional models, we define a cluster specific mean $\mu^c_{ij} = E(Y_{ij}|b_i,X_{ij})$, where $b_i$ is a random effect that allows us to link/correlate observations nested within a given cluster.
+
+We define the random effects logistic model as:
+
+$$logit[\mu^c_{ij}] = X^\shortmid_{ij}\beta^c + Z^\shortmid_{ij}b_i$$
+
+where $Z_{ij} \in X_{ij}$, $b_i \sim MVN(0,D)$; $b_i$ independent of $X_{ij}$; $Y_{ij} \perp Y_{ik}$ given $b_i$.
+
+## B. Interpretation
+
+Take the placebo-controlled trial for respiratory function and the simplest random effects model, i.e. a random intercept.
+
+\begin{tabular}{rcl}
+$logit[Pr(Y_{ij}=1|post_{ij},trtmnt01_i,b_i)]$ & = &  $\beta^c_{0i} + \beta^c_1 I(post_{ij} > 0) + \beta^c_2 I(post_{ij} > 0) trtmnt01_i$ \\
+& & \\
+& = & $\beta^c_{0} + b_i + \beta^c_1 I(post_{ij} > 0) + \beta^c_2 I(post_{ij} > 0) trtmnt01_i$ \\
+\end{tabular}
+
+where $b_i \sim N(0,\sigma^2)$ and the covariates are independent of $b_i$.
+
+Interpretation:
+
+ * $\beta^c_{0i}$: defines a patient specific log-odds of a good respiratory response at baseline
+ 
+ * $\beta^c_{0i} = \beta^c_0 + b_i$, where $b_i \sim N(0,\sigma^2)$: $\beta^c_0$ is the log-odds of a good respiratory response for the average patient (i.e. $b_i = 0$) 
+ 
+ * $\beta^c_{0i} = \beta^c_0 + b_i$, where $b_i \sim N(0,\sigma^2)$: $b_i$ represents the deviation from this average log-odds of a good respiratory response for patient $i$
+ 
+ * For a given patient/time/treatment: 
+ 
+ $$\mu^c_{ij} = \frac{exp(\beta^c_{0} + b_i + \beta^c_1 I(post_{ij} > 0) + \beta^c_2 I(post_{ij} > 0) trtmnt01_i)}{1 + exp(\beta^c_{0} + b_i + \beta^c_1 I(post_{ij} > 0) + \beta^c_2 I(post_{ij} > 0) trtmnt01_i)}$$
+ 
+ * $\beta^c_1$: The difference in the log-odds of a good response comparing follow-up to baseline among patients who received the placebo and whom have the same propensity of a good respiratory response!
+ 
+ \begin{tabular}{rcl}
+ $\beta^c_1$ & = &  $logit[Pr(Y_{ij}=1|post_{ij} = 1,trtmnt01_i = 0,b_i)] - logit[Pr(Y_{ij}=1|post_{ij} = 0,trtmnt01_i = 0,b_i)]$ \\
+ & & \\
+ & = & $log(exp(\beta^c_{0} + b_i + \beta^c_1)) - log(exp(\beta^c_{0} + b_i))$ \\
+ & & \\
+ & = & $log\left[\frac{exp(\beta^c_{0} + b_i + \beta^c_1)}{exp(\beta^c_{0} + b_i)}\right]$ \\
+ \end{tabular}
+ 
+ * $\beta^c_1 + \beta^c_2$:  The difference in the log-odds of a good response comparing follow-up to baseline among patients who received the treatment and whom have the same propensity of a good respiratory response!
+ 
+## C. Example
+ 
+Fit the model we described above. 
+ 
+```{r randomeffects}
+ri.fit = glmer(r~post + postXtrt+(1|id),data=data,family="binomial",nAGQ=7)
+summary(ri.fit)
+```
+ 
+## D. Marginal vs. Conditional Model
+
+Compare the marginal ($\beta$) and conditional ($\beta^c$) parameter estimates.
+
+```{r comparerandommarginal}
+cbind(summary(fit.exch)$coeff[,1],summary(ri.fit)$coeff[,1])
+```
+
+Recall our conversation about assessing confounding in logistic regression models; we showed that $\beta \ne \beta^c$ when $Z$ is independent of $X$.  Replace $Z$ with the random effect $b$ and you have:
+
+\begin{tabular}{rl}
+Marginal model: &  $logit[Pr(Y_{ij}|X_{ij})] = \beta_0 + \beta_1 X_{ij}$ \\
+&   \\
+Conditional model: & $logit[(Pr(Y_ij|X_{ij},b_i))] = \beta^c_0 + \beta^c_1 X_{ij} + b_i$\\
+\end{tabular}
+
+and we know that $|\beta| \le |\beta^c|$.
+
+In general:
+
+  * $\beta =$ change in log population odds per unit change in $X$
+  
+  * $\beta^c =$ change in cluster-specific log odds per unit change in $X$
+  
+## E. Estimation
+
+The likelihood function for the observed data $Y$ as a function of $\beta^c$ and $D$ (the variance of the random effects) is:
+
+\begin{tabular}{rcl}
+$L(y|\beta^c,D)$ & = & $\displaystyle\prod_{i=1}^m \int \displaystyle\prod_{j=1}^{n_i} (\mu^c_{ij}(\beta^c,b_i))^{y_{ij}} (1-\mu^c_{ij}(\beta^c,b_i))^{1-y_{ij}} f(d_i|D) db_i$ \\
+& & \\
+& = & $\displaystyle\prod_{i=1}^m \int Pr(y_{i1},...,y_{in_i}|\beta^c,b_i) Pr(b_i|D) db_i$
+\end{tabular}
+
+It can be shown that:
+
+$$\frac{\partial log(L(y|\beta^c,D))}{\partial \beta^c} = \displaystyle\sum_{i=1}^m \displaystyle\sum_{j=1}^{n_i} X_{ij}^\shortmid (y_{ij} - E_{b_i|y}(\mu^c_{ij}(b_i,\beta^c)))$$
+
+The solution requires numerical integration!  Typically this is accomplished via gaussian quadrature or adaptive gaussian quadrature.  Notice in the $glmer$ command the option "nAGQ=7".  This option specifies the number of integration points used in the numerical integration. When fitting generalized linear mixed models, you should vary this to be sure your solution has converged!
+
+## F. Random intercept model
+
+Lets further consider the case of the random intercept model.
+
+$$logit[\mu^c_{ij}] = X_{ij}^\shortmid \beta^c + b_i$$
+
+where $b_i \sim N(0,\sigma^2)$.
+
+The likelihood function is:
+
+$$L(y|\beta^c,\sigma^2) = \displaystyle\prod_{i=1}^m \int \frac{exp\left[(\displaystyle\sum_{j=1}^{n_i} y_{ij} X_{ij})^\shortmid \beta^c + y^+_i b_i\right]}{\displaystyle\prod_{j=1}^{n_i}(1 + exp(X_{ij}^\shortmid \beta^c + b_i))} f(b_i|\sigma_2)db_i$$
+where $y_i^+ = \displaystyle\sum_{j=1}^{n_i} y_{ij}$ is sufficient for $b_i$, i.e. $Pr(y_{ij}|y_i^+,b_i)$ does not depend on $b_i$
+
+### 1. Matched case-control study
+
+Suppose you have a matched case-control study with data:
+
+\begin{tabular}{rl}
+Control: & $(Y_{i0} = 0, X_{i0})$ \\
+& \\
+Case: & $(Y_{i1} = 1, X_{i1})$ \\
+\end{tabular}
+
+The model is:
+
+$$Pr(Y_{ij} = 1|X_{ij},b_i) = \frac{exp(X_{ij}^\shortmid \beta^c + b_i)}{1 + exp(X_{ij}^\shortmid \beta^c + b_i)}$$
+
+Seek to estimate $\beta^c$ without assumptions about $b_i$.
+
+You can express the conditional likelihood as:
+
+$$CL(Y_i|\beta^c) = \displaystyle\prod_{i=1}^m \left[ Pr(Y_{i0}=0|X_{i0},y^+_i=1) Pr(Y_{i1}=1|X_{i1},y^+_i=1)\right]$$
+To show that this works, consider:
+
+\begin{tabular}{rcl}
+$Pr(Y_{i1}=1|X_{i1},Y^+_i = 1, b_i)$ & = & $\frac{Pr(Y_{i1}=1 \text{ and } Y_i^+=1 | b_i)}{Pr(Y^+_i=1|b_i)}$ \\
+& & \\
+& = & $\frac{Pr(Y_{i1}=1 \text{ and } Y_{i0} = 0 | b_i)}{Pr(Y_{i1}=1 \text{ and } Y_{i0} = 0 | b_i) + Pr(Y_{i1}=0 \text{ and } Y_{i0} = 1 | b_i)}$ \\
+& & \\
+& = & $\frac{Pr(Y_{i1}=1|b_i)\times Pr(Y_{i0} = 0 | b_i)}{Pr(Y_{i1}=1|b_i)\times  Pr(Y_{i0} = 0 | b_i) + Pr(Y_{i1}=0|b_i)\times Pr(Y_{i0} = 1 | b_i)}$ \\
+& & \\
+& = & $\frac{\left(\frac{exp(X_{i1}\beta^c + b_i)}{1+exp(X_{i1}\beta^c + b_i)}\times\frac{1}{1+exp(X_{i0}\beta^c + b_i)}\right)}{\frac{exp(X_{i1}\beta^c + b_i)}{1+exp(X_{i1}\beta^c + b_i)}\times\frac{1}{1+exp(X_{i0}\beta^c + b_i)}+\frac{1}{1+exp(X_{i1}\beta^c + b_i)}\times\frac{exp(X_{i0}\beta^c + b_i)}{1+exp(X_{i0}\beta^c + b_i)}}$ \\
+& & \\
+& = & $\frac{exp(X_{i1}\beta^c + b_i)}{exp(X_{i1}\beta^c + b_i)+exp(X_{i0}\beta^c + b_i)}$ \\
+& & \\
+& = & $\frac{exp(X_{i1}\beta^c)}{exp(X_{i1}\beta^c)+exp(X_{i0}\beta^c)}$ \\
+ & & \\
+ & & NOTE:  Divide the numerator and denominator by $exp(X_{i0}\beta^c)$ \\
+& & \\
+ & = & $\frac{exp((X_{i1}-X_{i0})\beta^c)}{1+exp((X_{i1}-X_{i0})\beta^c)}$
+ \end{tabular}
+ 
+\begin{tabular}{rcl}
+$Pr(Y_{i0}=0|X_{i0},Y^+_i = 1, b_i)$ & = & $\frac{Pr(Y_{i0}=0 \text{ and } Y_i^+=1 | b_i)}{Pr(Y^+_i=1|b_i)}$ \\
+& & \\
+& = & $\frac{Pr(Y_{i1}=1 \text{ and } Y_{i0} = 0 | b_i)}{Pr(Y_{i1}=1 \text{ and } Y_{i0} = 0 | b_i) + Pr(Y_{i1}=0 \text{ and } Y_{i0} = 1 | b_i)}$ \\
+& & \\ 
+& = & $Pr(Y_{i1}=1|X_{i1},Y^+_i = 1, b_i)$ \\
+\end{tabular}
+ 
+Therefore, the conditional likelihood can be expressed as:
+
+$$CL(Y|\beta^c) = \displaystyle\prod_{i=1}^{m} \left[\frac{exp((X_{i1}-X_{i0})\beta^c)}{1+exp((X_{i1}-X_{i0})\beta^c)}\right]^1$$
+A marginal logistic regression of $y = (1,1, ..,)_{mx1}$ on $(X_{11}-X_{10},X_{21}-X_{20}, ..., X_{m1}-X_{m0})$ with no intercept.
+
+### 2. Example
+
+Consider the matched case-control study of endometrial cancer.  The scientific question is whether women who use estrogens, have a history of gall-bladder disease or hypertension were at increased risk of endometrial cancer. There was some prior belief that these risk factors may act synergistically. Use conditional logistic regression with this data set to investigate these questions. 
+
+For each model, we will use only the first control in a 1-1 design.  NOTE:  You will be repeating the analysis with the 1-4 design and comparing the findings in Problem Set 3. 
+
+```{r clogit}
+dat = read.table("./endometrial.txt")
+names(dat) = c("set","case","age","ageg","est","gall","hyp","obesity","nonestdrug")
+dat$est = dat$est - 1
+dat$gall = dat$gall - 1
+dat$hyp = dat$hyp - 1
+dat$obesity[dat$obesity==3] = NA
+dat$obesity = dat$obesity - 1
+dat$nonestdrug = dat$nonestdrug - 1
+dat$firstctrl = unlist(tapply(dat$set,dat$set,FUN=function(x) c(0,1,rep(0,length(x)-2))))
+
+tapply(dat$est,dat$case,mean)
+tapply(dat$gall,dat$case,mean)
+tapply(dat$hyp,dat$case,mean)
+
+
+library(survival)
+
+## Fit the conditional logistic model with
+## all three exposures using only 1st control
+fit1=clogit(case~est+gall+hyp+ strata(set), data=subset(dat,case==1|firstctrl==1))
+
+## Drop hypertension from the model
+fit1=clogit(case~est+gall+strata(set), 
+            data=subset(dat,case==1|firstctrl==1))
+
+## Add the interactions
+fit1.int=clogit(case~est*gall+strata(set), 
+            data=subset(dat,case==1|firstctrl==1))
+coeff.sum = sum(fit1.int$coefficients)
+var.sum = t(c(1,1,1)) %*% vcov(fit1.int) %*% c(1,1,1)
+exp(coeff.sum)
+exp(coeff.sum-1.96*sqrt(var.sum))
+exp(coeff.sum+1.96*sqrt(var.sum))
+```
+
+In summary, both estrogen use and history of gall bladder disease were found to increase the risk of endometrial cancer. Furthermore, these risk factors were found to be non-additive. That is, on the log odds scale, the risk associated with having both risk factors is only marginally greater than the risk associated with having a single risk factor. However, on the odds scale this translates to a substantive increase in risk. One way to interpret the findings is below.
+
+ * The estimated odds of being a case for subjects with only estrogren use are 14.5 (95\% CI: 3.1 to 71.4) times the odds of being a case for subjects with neither estrogen use or history of gallbladder disease. 
+ 
+ * The estimated odds of being a case for subjects with only a history of gall bladder disease are 9.9 (95\% CI: 0.95 to 104.8) times the odds of being a case for subjects with neither estrogen use or history of gallbladder disease.
+ 
+ * Finally, the estimated odds of being a case for subjects with both estrogen use and gall bladder disease are 16.8 (95\% CI: 2.9 to 99.0) times the odds of being a case for subjects with neither estogren use or history of gallbladder disease. This is approximately double the odds ratio from either risk factor alone.

@@ -1,0 +1,192 @@
+---
+title: "140.654 Lab 7: Survival Analysis"
+author: "Erjia Cui and Elizabeth Colantuoni"
+output: html_document
+---
+
+## Analysis of Survival outcomes
+
+In this lab, you will:
+
+ * estimate the survival function by hand using the Kaplan-Meier estimator for the survival function
+ 
+ * visually compare survival functions across two exposure groups
+ 
+ * compare two survival functions using the log-rank test
+
+### 1. Estimating the survival function by hand
+
+You will spend the first part of this lab estimating the survival function for the male patients from the example data in Lecture 12 and 13; patients hospitalized for severe mental illness.  The survival outcome is time from hospitalization to death.  Patients may be censored if they are discharged from the hospital or administratively censored when the study period ends.
+
+```{r data,echo=FALSE,results="asis",message=FALSE}
+d = read.table("./survival.csv",sep=",",header=T)
+d$event = 1 - d$censor
+d.male = d[d$male==1,]
+junk = ifelse(d.male$event==0, paste0(d.male$survive,"+"), d.male$survive)
+```
+
+Recall the survival data for males is: `r junk`.
+
+Fill in the table below and estimate the survival function for males.
+
+Event Time | $N_i$ | $y_i$ | $\frac{N_i - y_i}{N_i}$ | $\hat{S}(t)$ 
+-----------|-------|-------|-------------------------|-------------
+0          | 11    |  0    |  (11-0)/11              | 1
+22         |       |       |                         | 
+25         |       |       |                         |
+28         |       |       |                         |
+35         |       |       |                         |
+
+### 2. Estimating the survival function in R
+
+Now, compare your estimated survival function based on *survfit* in R.  Ask R to compute the survival function for both males and females, estimate the 95% CI for the survival functions using the complementary log-log transformation.
+
+```{r survest}
+library(survival)
+St.cll = survfit(Surv(survive,event) ~ male, data = d,
+                type = "kaplan-meier",
+                conf.type = "log-log")
+summary(St.cll)
+```
+
+
+```{r survplot,fig.height=4,fig.width=6}
+par(mar=c(4,4,1,1))
+plot(St.cll,conf.int=TRUE,mark.time=TRUE,
+     xlab="Time from hospitalization (years)",ylab="Proportion at risk",
+     col=c("green","blue"),lwd=2,las=1)
+
+legend("bottomleft",lwd=2,
+       legend=c("Female","Male"),
+       lty=c(1,1),col=c("green","blue"),cex=0.8,bty="n")
+```
+
+Based on estimates of the two survival functions above, do you think that the survival functions are *different* when comparing males to females?
+
+### 3. Log-rank test for $H_0: S_1(t) = S_2(t)$
+
+Now, we will consider a statistical test to compare two survival functions defined by a binary exposure variable, e.g. male vs. female.
+
+The log-rank test is a special case of a class of estimators that can be used to compare two survival functions.  The test requires the following assumptions:
+
+ * censoring is unrelated to prognosis, i.e. event process and censoring process are independent
+ 
+ * the survival probabilities are the same for subjects recruited early and late in the study
+ 
+ * the events happened at the times specified
+ 
+ * the hazard functions for the two exposure groups are proportional; i.e. the proportional hazards assumption.
+ 
+The log-rank test statistic is constructed by computing the observed and expected number of events in one of the groups at each observed event time and then adding these to obtain an overall summary across all-time points where there is an event. If the two survival functions are the same, then you would expect that the observed and expected number of events are very similar and when adding these components over the unique events times, the log-rank test statistic will be close to 0.
+
+You can compute the log-rank test statistic as follows:
+
+ * Let $1, ..., J$ be the distinct event times, across both groups.
+
+ * Let $N_{1,j}$ and $N_{2,j}$ be the number of patients at risk at the start of time $j$ in group 1 and 2, respectively.
+ 
+ * Let $O_{1,j}$ and $O_{2,j}$ be the number of observed events at time $j$ in group 1 and 2, respectively.
+ 
+ * Define $N_j = N_{1,j} + N_{2,j}$ and $O_j = O_{1,j} + O_{2,j}$ be the total number at risk and total number of events at time $j$.
+ 
+ * Under the null hypothesis of equal survival functions, the expected number of events at time $j$ in group $i$ as $E_{i,j} = N_{i,j} \frac{O_{j}}{N_j}$
+ 
+ * Under the null hypothesis of equal survival functions, the variance in the observed number of events at time $j$ in group $i$ is 
+ 
+ $$V_{i,j} = E_{i,j} \left(\frac{N_j - O_j}{N_j}\right) \left(\frac{N_j - N_{i,j}}{N_j - 1}\right)$$
+ 
+Then the log-rank test statistic is:
+
+$$Z_{log-rank} = \left[\displaystyle \sum_{j = 1}^J (O_{i,j} - E_{i,j}) \right] \left[\displaystyle \sum_{j=1}^J V_{i,j} \right]^{-1/2} \sim N(0,1)$$
+
+for $i = 1 \text{ or } 2$.  
+
+NOTE:  You compute the log-rank test statistic by fixing either $i = 1$ or $i = 2$.
+
+The table below displays the unique event times for our data example and the observed and expected counts for each group.
+
+```{r logrankcalc}
+tt = unique(d$survive[d$event==1])
+tt = tt[order(tt)]
+at.risk = NULL
+for(i in 1:length(tt)) at.risk = rbind(at.risk,c(length(d$survive[d$male==1 & d$survive>=tt[i]]),length(d$survive[d$male==0 & d$survive>=tt[i]])))
+at.risk = as.data.frame(at.risk)
+names(at.risk) = c("N1","N2")
+at.risk$N = apply(at.risk,1,sum)
+events = NULL
+for(i in 1:length(tt)) events = rbind(events,c(length(d$survive[d$male==1 & d$survive==tt[i] & d$event==1]),length(d$survive[d$male==0 & d$survive==tt[i] & d$event==1])))
+events = as.data.frame(events)
+names(events) = c("O1","O2")
+events$O = apply(events,1,sum)
+log.rank.calcs = cbind(tt,at.risk,events)
+log.rank.calcs$E1 = log.rank.calcs$N1*log.rank.calcs$O/log.rank.calcs$N
+log.rank.calcs$E2 = log.rank.calcs$N2*log.rank.calcs$O/log.rank.calcs$N
+log.rank.calcs
+```
+
+ * The total number of observed and expected events for males are `r sum(log.rank.calcs$O1)` and `r sum(log.rank.calcs$E1)`, respectively.
+
+ * The total number of observed and expected events for females are `r sum(log.rank.calcs$O2)` and `r sum(log.rank.calcs$E2)`, respectively.
+ 
+You can perform the log-rank test using *survdiff* function:
+
+```{r logrank}
+LogRank <- survdiff(Surv(survive, event) ~ male, data = d)
+LogRank
+```
+
+### 4. Checking the proportional hazards assumptions
+
+One way to visually inspect the proportional hazards assumption is to plot the complementary log-log survival functions as a function of $log(t)$.  If the curves are roughly parallel this supports the proportional hazards assumption.
+
+```{r cllplot,fig.height=4,fig.width=6}
+par(mar=c(4,4,1,1))
+plot(log(St.cll$time[1:St.cll$strata[1]]),
+     log(-log(St.cll$surv[1:St.cll$strata[1]])),type="l",
+     xlab="Log(Time from hospitalization)",ylab="Log(-Log(S(t)))",
+     col="green",lwd=2,las=1,ylim=c(-2.5,0.25))
+points(log(St.cll$time[(St.cll$strata[1]+1):sum(St.cll$strata)]),
+       log(-log(St.cll$surv[(St.cll$strata[1]+1):sum(St.cll$strata)])),
+       type="l",col="blue")
+legend("bottomleft",lwd=2,
+       legend=c("Female","Male"),
+       lty=c(1,1),col=c("green","blue"),cex=0.8,bty="n")
+```
+
+
+This is a small dataset but there is some evidence in the figure of non-proportional hazards.
+
+Below is a simple simulation study using survival times generated from an exponential distribution (hazard $\lambda$) where the proportional hazards assumption holds.
+
+```{r PH,fig.height=4,fig.width=6}
+set.seed(756)
+times0 = rexp(30,rate=1/13)
+times1 = rexp(30,rate=1/(13*1.25))
+censor = rexp(60,rate=1/20)
+d = as.data.frame(cbind(times=c(times0,times1),group=c(rep(0,30),rep(1,30)),censor=censor))
+d$survive = apply(d[,c("times","censor")],1,min)
+d$event = ifelse(d$times==d$survive,1,0)
+cll = survfit(Surv(survive,event)~group,data = d,
+                type = "kaplan-meier")
+stop0 = cll$strata[1]
+start1 = stop0+1
+stop1 = sum(cll$strata)
+
+par(mar=c(4,4,1,1))
+plot(log(cll$time[1:stop0]),
+     log(-log(cll$surv[1:stop0])),type="l",
+     xlab="Log(Time from hospitalization)",ylab="Log(-Log(S(t)))",
+     col="green",lwd=2,las=1,ylim=c(-4,0.25))
+points(log(cll$time[start1:stop1]),
+       log(-log(cll$surv[start1:stop1])),
+       type="l",col="blue")
+legend("bottomleft",lwd=2,
+       legend=c("Group0","Group1"),
+       lty=c(1,1),col=c("green","blue"),cex=0.8,bty="n")
+```
+
+We can estimate the relative hazard using a survival regression analysis.  We will learn more about this on Thursday.
+
+```{r coxph}
+summary(coxph(Surv(survive,event)~group,data=d))
+```

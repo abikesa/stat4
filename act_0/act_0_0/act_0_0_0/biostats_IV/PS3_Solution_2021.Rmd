@@ -1,0 +1,307 @@
+---
+title: "PS3-Solution-2021"
+author: "Elizabeth Colantuoni"
+output: pdf_document
+---
+
+```{r prepare,message=FALSE,warning=FALSE,echo=FALSE}
+options(width=70,scipen=2,digits=4)
+library(ggplot2)
+library(biostat3)
+library(dplyr) 
+library(grid)
+library(gridExtra)
+library(splines)
+library(survival)
+library(lmtest)
+library(caret)
+library(reshape2)
+```
+
+# I. Conditional Logistic Regression
+
+Here you will be extending the analysis conducted and reviewed in Lecture9-Handout.  Recall that the design was a matched case-control study conducted by Mack et al. (1976) to study the effect of exogenous estrogens on the risk of endometrial cancer. The data set is available on the Courseplus site, see Datasets folder. The dataset comprises 63 matched sets with one case and 4 controls per set. Controls were matched by being alive in the same community at the time of the case was diagnosed, having age within 1 year, same marital status and entering the community at roughly the same time. Controls could not have had a hysterectomy in which case they would not have been at risk of endometrial cancer. These data were made famous by the groundbreaking two volumes by Breslow and Day entitled Statistical Methods in Cancer Research. Chapters V and VI are excellent overviews of statistical methods for matched case-control studies.
+
+The scientific questions of interest are:
+
+*	Are women who use estrogens, have a history of gall-bladder disease or hypertension at increased risk of endometrial cancer?  Do these multiple risk factors may act synergistically?  
+
+* Does age or obesity modify the association between endometrial cancer and use of estrogens, history of gall-bladder disease or hypertension? 
+
+We explored Question A using only the first control in a 1-1 design, see Lecture9-Handout.  You should repeat that analysis using all the available controls in the 1-4 design.  Comment on how the strength of evidence changes with the addition of 3 additional controls per case.  Then conduct an analysis to address Question B.
+
+Prepare a one-page extended abstract plus one or two tables/figures that summarizes your work. State the questions. Describe key features of the data.  
+
+## 1. Analysis
+
+```{r datasetup, warning=FALSE}
+endo=read.table('./endometrial.txt')
+names(endo)=c('set','case','age','ageg','est','gall','hyp','ob','non')
+#make binary variables 0/1 (instead of 1/2)
+endo[,c('est','gall','hyp','ob','non')]=endo[,c('est','gall','hyp','ob','non')] - 1
+#make obesity a factor, since 0=no, 1=yes and 2=unknown
+endo$ob=factor(endo$ob)
+# Create binary age variable
+endo$age_grp=(endo$age >= 65)
+endo$obYes=(endo$ob==1)
+```
+
+Recall some of the prior descriptive analyses:
+
+```{r, echo=FALSE}
+endo.long=melt(endo, id.vars=c('set','case','age','ageg','ob','non'))
+endo.summ=summarise(group_by(endo.long, case, variable), 
+                       p=mean(value), n=n(), 
+                       LB=p-1.96*sqrt(p*(1-p)/n), UB=p+1.96*sqrt(p*(1-p)/n))
+ggplot(endo.summ, aes(x=factor(case), group=case)) + 
+  geom_point(aes(y=p)) + 
+  geom_errorbar(aes(ymin=LB, ymax=UB)) +
+  facet_grid(. ~ variable) + theme_bw() 
+```
+
+Cases have substantially higher rates of estrogen usage (statistically significant), somewhat higher rates of gallbladder disease (statistically significant), and marginally higher rates of hypertension (not statistically significant).
+
+In our prior analyses, we found that hypertension was not associated with risk of endometrial cancer so we dropped this variable from consideration.  
+
+When using the 1:1 design, we found the following:
+
+
+ * The estimated odds of being a case for subjects with only estrogren use are 14.5 (95\% CI: 3.1 to 71.4) times the odds of being a case for subjects with neither estrogen use or history of gallbladder disease. 
+ 
+ * The estimated odds of being a case for subjects with only a history of gall bladder disease are 9.9 (95\% CI: 0.95 to 104.8) times the odds of being a case for subjects with neither estrogen use or history of gallbladder disease.
+ 
+ * Finally, the estimated odds of being a case for subjects with both estrogen use and gall bladder disease are 16.8 (95\% CI: 2.9 to 99.0) times the odds of being a case for subjects with neither estogren use or history of gallbladder disease. This is approximately double the odds ratio from either risk factor alone.
+
+Next, we used the 1:4 design and refit the model that includes main effects for estrogen use and history of gallbladder disease and a model that included the interaction of estrogen use and history of gallbladder disease to explore whether estrogen use and gallbladder disease may act synergistically.
+
+```{r maineffects}
+fit1=clogit(case ~ est + gall + strata(set), data=endo)
+coefficients(summary(fit1))
+fit1.out = lincom(fit1,c("est","gall"),eform=TRUE,digits=2)
+fit1.out
+```
+
+Estrogen use and history of gallbladder disease both appear to have a statistically significant association with higher risk of endometrial cancer.
+
+Next, We add interaction terms with age (indicator of age > 65) and obesity to the model with main terms of estogen use and history of gall bladder disease, and perform likelihood ratio tests to test for the significance of those effects. 
+
+```{r ageobinteractions}
+fit1age=clogit(case ~ est + gall + est:age_grp + gall:age_grp + strata(set), data=endo)
+coefficients(summary(fit1age))
+fit1age.out = lincom(fit1age,c("est","est+est:age_grpTRUE","gall","gall+gall:age_grpTRUE"),eform=TRUE,digits=2)
+fit1age.p = anova(fit1, fit1age, test='LRT')[2,4]
+fit1age.p
+
+
+fit1ob=clogit(case ~ est+gall+ob+est:ob+gall:ob+strata(set), data=endo)
+coefficients(summary(fit1ob))
+fit1ob.out = lincom(fit1ob,c("est","est+est:ob1","est+est:ob2","gall","gall+gall:ob1","gall+gall:ob2"),eform=TRUE,digits=2)
+fit1ob.p = anova(fit1, fit1ob, test='LRT')[2,4]
+fit1ob.p
+```
+
+Age and obesity do not appear to moderate the association between the risk factors and risk of endometrial cancer.  
+
+Fit the model with the interaction between estrogen use and gallbladder disease.
+
+```{r,gallestinteractions}
+fit4=clogit(case ~ est*gall + strata(set), data=endo)
+coefficients(summary(fit4))
+fit4.out = lincom(fit4,c("est","gall","est+gall+est:gall"),eform=TRUE,digits=2)
+fit4.p = anova(fit1,fit4,test="LRT")[2,4]
+coef=round(coefficients(fit4),2)
+CI=round(confint(fit4),2)
+#compute variance and CI of sum of coefficients
+var_coefsum=c(1,1,1) %*% vcov(fit4) %*% c(1,1,1)
+CI_coefsum=round(sum(coef) + c(-1,1)*1.96*sqrt(var_coefsum),2)
+```
+
+The interaction between estrogen use and history of gallbladder disease is statistically significant and has a negative coefficient.  This shows that the risks associated with estrogen use and gallbladder disease are not additive: the log odds of endometrial cancer for subjects with estrogen use (only) is `r format(coef[1],nsmall=2)` (95% CI: [`r format(CI[1,1],nsmall=2)`, `r format(CI[1,2],nsmall=2)`]), for subjects with history of gallbladder disease (only) is `r coef[2]` (95% CI: [`r format(CI[2,1],nsmall=2)`, `r format(CI[2,2],nsmall=2)`]), and for subjects with both is `r sum(coef)` (95% CI: [`r format(CI_coefsum[1],nsmall=2)`, `r format(CI_coefsum[2],nsmall=2)`]).  We see that subjects with both risk factors have only slightly higher log odds of endometrial cancer than subjects with only a single risk factor.  
+
+
+Compared to the 1:1 design, we have gained precision to estimate the main effect of estogren use and gallbladder disease but wider confidence interval for the interaction between estrogen use and gallbladder disease.
+
+## 2. One-page extended abstract
+
+```{r table,echo=FALSE}
+library(xtable)
+out = rbind(fit1.out,fit1age.out,fit1ob.out,fit4.out)
+out = as.data.frame(out[,1:3])
+names(out) = c("Odds Ratio","Lower limit","Upper limit")
+row.names(out) = c("Estrogen use","HX gallbladder","Estrogen use: Age<65","Estrogen use: Age>=65",
+                   "HX gallbladder: Age<65","HX gallbladder: Age>=65","Estrogen use: Not obese","Estrogen use: Obese","Estrogren use: Unknown","HX gallbladder: Not obese","HX gallbladder: Obese","HX gallbladder: Unknown","Estrogen use ONLY","HX gallbladder ONLY","Both")
+```
+
+**Objective:**  To study the effect of exogenous estrogens and history of gallbladder disease on the risk of endometrial cancer and determine whether age or obesity modifies these effects.
+
+**Design:**  A matched case-control study comprised of 63 matched sets with one case and 4 controls per set. Controls were matched by being alive in the same community at the time of the case was diagnosed, having age within 1 year, same marital status and entering the community at roughly the same time. Controls could not have had a hysterectomy in which case they would not have been at risk of endometrial cancer. 
+
+**Methods:**  Descriptive statistics were computed to compare report of estrogen use and gallbladder disease among the cases and controls.  Several conditional logistic regression models were constructed including a model with only main terms for report of estrogen use and history of gallbladder disease.  This model was extended where each moderator (indicator of age > 64 and indicators for obesity: yes, unknown vs. no) plus interaction terms were included. Note that the main term for age was excluded from the interaction model given age was one of the central matching variables.    Likelihood ratio tests were used to determine if age and obesity were moderators.  Lastly, we considered a model where the effect of estrogen use and history of gallbladder disease could act synergistically (i.e. interaction of estrogen use and history of gallbladder disease).
+
+**Results:** The figure below displays the proportion of cases and controls with estrogen use, history of gallbladder disease, age $\ge$ 65 and whom are obese.  There are clinically relevant differences between proportion of cases and controls reporting estrogen use, history of gallbladder disease and obesity.  Based on the design we didn't anticipate differences by age groups.
+
+The table below displays the results from the conditional logistic regression models.  Both estrogen use and history of gallbladder disease were found to increase the risk of endometrial cancer.  Specifically, the odds of endometrial cancer are `r round(as.numeric(out[1,1]),2)` times greater for women reporting estrogen use compared to otherwise similar women with no estrogen use (95% CI: `r round(as.numeric(out[1,2]),2)` to `r round(as.numeric(out[1,3]),2)`) and are `r round(as.numeric(out[2,1]),2)` times greater for women with a history of gallbladder disease compared to otherwise similar women without (95% CI: `r round(as.numeric(out[2,2]),2)` to `r round(as.numeric(out[2,3]),2)`).  Although being an older woman (Age $\ge 65$) increased the odds of endometrial cancer for estrogen users (Odds ratio: `r round(as.numeric(out[3,1]),2)` vs. `r round(as.numeric(out[4,1]),2)` for older and younger women, respectively) and those with a history of gallbladder disease (Odds ratio: `r round(as.numeric(out[5,1]),2)` vs. `r round(as.numeric(out[6,1]),2)` for older and younger women, respectively); these differences did not reach statistical significance (p-value for effect modification: `r round(fit1age.p,3)`).  Unlike for age, when assessing whether obesity status moderates the relationship between endometrial cancer with estrogen use and history of gallbladder disease we found no clear pattern for the direction of the effect modification (p-value: `r round(fit1ob.p,3)`).   Lastly, we found that estrogen use and history of gallbladder act synergistically on the risk of endometrial cancer (p-value for effect modification `r round(summary(fit4)$coeff[3,5],3)`).   The estimated odds of endometrial cancer among women with only estrogren use are 14.88 (95\% CI:[4.49,49.36]) times the odds for women with neither estrogen use or history of gallbladder disease.  The estimated odds of endometrial cancer among women with only a history of gall bladder disease are 18.07(95\% CI:[3.20,102.01]) times the odds for women with neither estrogen use or history of gallbladder disease.  Finally, the estimated odds of endometrial cancer for women with both estrogen use and gall bladder disease are 34.53(95\% CI:[8.33,142.59]) times the odds for women with neither estogren use or history of gallbladder disease. This is approximately double the odds ratio from either risk factor alone.  We note that our analysis with one case and four controls often yielded more narrow confidence intervals compared to when we considered the case matched to a single control (data not shown).
+
+**Discussion:** In this small matched case-control study, we estimated that older age may modify the relationship between risk of endometrial cancer as a function of estrogen use and history of gallbladder disease; however we could not make a strong conclusion given the size and uncertainty in the data.  The strongest evidence in the data of moderation comes from estrogen use and gallbladder disease acting synergistically on the risk of endometrial cancer.
+
+```{r, echo=FALSE}
+endo.long=melt(endo, id.vars=c('set','case','age','ageg','ob','non','hyp'))
+endo.summ=summarise(group_by(endo.long, case, variable), 
+                       p=mean(value), n=n(), 
+                       LB=p-1.96*sqrt(p*(1-p)/n), UB=p+1.96*sqrt(p*(1-p)/n))
+ggplot(endo.summ, aes(x=factor(case), group=case)) + 
+  geom_point(aes(y=p)) + 
+  geom_errorbar(aes(ymin=LB, ymax=UB)) +
+  facet_grid(. ~ variable) + theme_bw() 
+```
+
+```{r outtable,results="asis"}
+out = xtable(out,digits=2,align="rccc")
+print(out,hline.after = c(-1,0,2,6,12,nrow(out)))
+```
+
+
+## II. Log-linear Poisson regression with application to a survival outcome
+
+```{r}
+library(knitr) 
+dat = data.frame(trt=c(rep(0,20),rep(1,20)),
+                 event_time=c(6,8,11,13,16,16,19,21,22,
+                              28,28,29 ,31,35,40,41,41,
+                              59,86,132,6,9,9,10,11,12,
+                              13,17,18,19,19,20,22,24,
+                              28,31,43,48,51,57),
+                 event=c( 1, 1 ,0, 1, 1, 1, 1, 0, 0, 1, 
+                          0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 
+                          1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 
+                          1, 0, 1, 1, 0, 1 ,0 ,1 ,0 ,0))
+```
+
+1. Create discrete time, grouped data by completing the table below.
+
+```{r}
+py = pyears(Surv(event_time, event) ~ 
+              tcut(rep(0, length(dat$event_time)), 
+                   breaks = c(-1, 10, 20, 30, 40, 50, 140), 
+                   labels = c("0-10", "11-20", "21-30", "31-40", 
+                              "41-50", "51+")) + trt, 
+            data = dat, 
+            scale = 1, 
+            data.frame = TRUE)
+pydat = py$data
+colnames(pydat) = c("label", "treat", "ptime", "n", "event")
+pydat = cbind(pydat, midpoints = rep(c(5, 15, 25, 35, 45, 55), times = 2),
+    ncensor = c(0, 1, 3, 1, 2, 3, 1, 6, 1, 0, 1, 2), incidence = pydat$event/pydat$ptime)
+pydat[,c("label","treat","ptime","n","event")]
+```
+
+3. Using the definitions provided and your binned survival data, compute the incidence rate and probability of surviving past each interval of time
+
+NOTE:  The incidence rate per bin of time should be computed as $event/ptime$.
+
+NOTE:  To compute the probability of surviving past each interval of time, you would compute $1 - event/ptime \times 10$, i.e. the incidence rate per week -> calculate the incidence rate per 10 weeks -> calculate 1 - the incidence rate per 10 weeks.  This will give you the probability of surviving the given interval of time given that you had survived to the beginning of the interval of time.
+
+NOTE:  I didn't ask you to compute the survival function, i.e. probability of surviving past the interval of time.  Here you would compute the cumulative product of the probabilities described above.
+
+```{r incidencecals}
+pydat = cbind(pydat, ProbInt = round((1-pydat$event/pydat$ptime*10),2),survProb = round(c(cumprod((1-pydat$event[1:6]/pydat$ptime[1:6]*10)),
+    cumprod((1-pydat$event[7:12]/pydat$ptime[7:12]*10))),2))
+pydat
+```
+
+
+
+4. Use Poisson regression with the grouped data above to estimate the relative hazard of hospitalization for treatment as compared to control assuming that the hazards are proportional and that the baseline log incidence rate is a: 
+
+A. linear function of weeks 
+B. linear spline function of weeks with breaks at 20 and 40 weeks
+C. Step function with a separate rate in each interval
+
+Complete the table below using the results for the 3 models
+
+```{r}
+pydat$time_sp1 = ifelse(pydat$midpoints > 20, pydat$midpoints - 20, 0)
+pydat$time_sp2 = ifelse(pydat$midpoints > 40, pydat$midpoints - 40, 0)
+fit1 = glm(event ~ treat + midpoints, family = "poisson", 
+           offset = log(ptime), data = pydat)
+fit1p = glm(event ~ treat + midpoints, family = "quasipoisson", offset = log(ptime), data = pydat)
+fit2 = glm(event ~ treat + midpoints + time_sp1 + time_sp2, family = "poisson",
+           offset = log(ptime), data = pydat)
+fit2p = glm(event ~ treat + midpoints + time_sp1 + time_sp2, family = "quasipoisson", offset = log(ptime), data = pydat)
+fit3 = glm(event ~ treat + factor(midpoints), family = "poisson", offset = log(ptime), data = pydat)
+fit3p = glm(event ~ treat + factor(midpoints), family = "quasipoisson", offset = log(ptime), data = pydat)
+RR = exp(c(coef(fit1)[2], coef(fit2)[2], coef(fit3)[2]))
+SE = c(coef(summary(fit1))[2, 2], coef(summary(fit2))[2, 2], coef(summary(fit3))[2, 2])
+CI_LB = exp(log(RR) - 1.96 * SE)
+CI_UB = exp(log(RR) + 1.96 * SE)
+df = c(length(coef(fit1))-1, length(coef(fit2))-1, length(coef(fit3))-1)
+deviance = c(summary(fit1)$deviance, summary(fit2)$deviance, summary(fit3)$deviance)
+AIC = c(AIC(fit1), AIC(fit2), AIC(fit3))
+table_fit = cbind(RR, CI_LB, CI_UB, df, deviance, AIC)
+rownames(table_fit) = c("model A", "model B", "model C")
+table_fit
+```
+
+5. Starting with Model B, extend the model by including the appropriate interaction terms and use a likelihood ratio test of the null hypothesis that the treatment hazards are proportional.
+
+```{r}
+fit1pint = glm(event ~ treat * midpoints, family = "poisson", offset = log(ptime), data = pydat)
+summary(fit1pint)
+anova(fit1p,fit1pint,test="LRT")
+
+fit2int = glm(event ~ treat * (midpoints + time_sp1 + time_sp2), family = "poisson",
+    offset = log(ptime), data = pydat)
+summary(fit2int)
+anova(fit2,fit2int,test="LRT")
+
+#fit3int = glm(event ~ treat * factor(midpoints), family ="poisson", offset = log(ptime),data = pydat)
+#summary(fit3int)
+#anova(fit3,fit3int,test="LRT")
+```
+
+Based on the results of the likelihood ratio tests for the linear model (p = 0.28) and linear spline model (p = 0.660), we do not find evidence against the proportional hazards assumption.
+
+6. Write a one page summary of your analysis of these data to address the question (QQQ): Is the distribution of time to hospitalization similar for persons randomized to receive treatment 0 as compared to treatment 1. Use the class format for a brief report: question, data display, methods, findings/discussion.
+
+Include in your report a paragraph that addresses two questions: (1) are your main findings sensitive to assumptions about the baseline hazard; and (2) is there strong evidence in these data that the proportional hazards assumption is incorrect.
+
+In the report, be quantitative and remember that absence of evidence is not the same as evidence of absence.
+
+
+## Report 
+
+### Research question
+
+We are interested in examining whether the distributions of time to hospitalization are similar for persons randomized to receive the standard treatment as compared to the new treatment.
+
+### Data display
+
+The available dataset contained data on 40 patients diagonised with schizophrenia, of whom 20 were randomized to the new drug treatment and the remaining 20 were randomzed to receive standard therapy. Each patient was followed from randomization / treatment initiation until hospitalization or censoring. Length of follow up was recorded in weeks. Whether a patient was hospitalized or censored was also captured in the data.
+
+The figure below displays Kaplan-Meier survival function estimates for each of the two treatment group. It is hard to tell visually if there is a difference between the two groups in terms of survival.
+
+```{r echo = FALSE,fig.height=3,fig.width=6}
+par(mar=c(4,4,1,1))
+km = survfit(Surv(event_time,event)~trt,data=dat)
+plot(km, conf.int = FALSE, 
+     xlab = "Survival Time", ylab = "Survival Probability",
+     col = c("green","blue"), lwd=2,las=1)
+legend(100,1,c("Standard","New"),lty=c(1,1),col=c("green","blue"),cex=0.75,bty="n")
+```
+
+## Methods
+We grouped follow-up time into six discrete intervals, i.e. 0-10, 11-20, 21-30, 31-40, 41-50, and 50+ weeks, and recorded the number of events and the total length of follow up within each time interval (i.e. person-weeks).Then we applied Poisson regression models to estimate the risk of hospitalization for subjects with schizophrenia on a standard versus new drug treatment. We modeled the baseline log incidence rate as a linear function, a linear spline with knots at 20 and 40 weeks, as well as a step function for time. We selected a model based on the Akaike information criterion (AIC). To test whether the relative risks are proportional, we extended the model by including interaction terms between time and treatment status, allowing the treatment hazards to differ across time. Following that, we conducted a likelihood ratio test to test the null hypothesis that the treatment hazards are proportional.
+
+```{r}
+kable(table_fit)
+```
+
+The linear spline model was selected as it minimized AIC. From this model, the risk of hospitalization among the persons receiving the new treatment is 1.174 (95% CI [0.475, 2.901]) times the risk among the persons receiving standard treatment. The estimate is not statistically significant at alpha = 0.05, as the 95% confidence interval overlaps one. Therefore, we don’t have enough evidence to show that the distribution of time to hospitalization for patient on a standard versus new drug treatment are different. 
+
+Our findings where similar when we allowed the baseline log incidence rate to be linear or a step function of the binned survival times.  Further, we found no evidence that the relative risk of hospitalization varied as a function of time from randomization (likelihood ratio test comparing the linear spline model to an extended model that included treatment x linear spline interaction terms, p  = 0.6603).
+
+## Conclusion and Discussion
+
+We find that the risk of hospitalization for subjects with schizophrenia on a standard versus new drug treatment is best represented with a proportional hazards model that allows for a nonlinear baseline log incidence rate. We estimated an increased risk of hospitalization among subjects receiving the new drug treatment; but this increased risk was not statistically significant which may be driven by the relative small size of the trial.  The choice to model the baseline log incidence rate as a nonlinear function did not have a substantial effect on the estimated relative risk of hospitalization for the new versus the standard treatment group. Within this small trial, there was no evidence that the proportional hazards assumption was violated.
+
+**Additional note:** Many of you may have used a *quasipoisson* model.  If you did, your results would have been very similar to the results above.  Small differences in the confidence intervals but these differences were qualitatively similar, i.e. the overall findings were the same.

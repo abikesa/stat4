@@ -1,0 +1,218 @@
+---
+title: "140.654 Lab 2: Checking a Logistic Regression Model"
+author: "Erjia Cui and Elizabeth Colantuoni"
+output: html_document
+---
+
+<style type="text/css">
+h1.title {
+  font-size: 35px;
+}
+</style>
+
+## Objectives
+
+The objectives of today's lab session are:
+
+1. Describe and implement the lorelogram for evaluating dependence in longitudinal designs with binary outcomes.
+2. Construct observed vs. fitted plots to evaluate the logistic regression assumptions for the mean of the binary outcome.
+3. Evaluate the variance assumption within a logistic regression model.
+4. Use DBETAS and DFITS to evaluate the influence of individual observations on the fit of a logistic regression model.
+
+## Introduction
+
+Assumptions of a logistic regression model from most to least important:
+
+1. Independence
+2. Mean model correctly specified
+3. Variance model correctly specified
+4. Few data points don't have great influence on results
+
+```{r,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(splines)
+load('./../nmes.rdata')
+data <- nmes
+data[data == '.'] <- NA
+```
+
+## Checking Assumptions
+
+### 1. Independence - Lorelogram
+
+The evaluation of independence assumption stems mostly from the design. If the design indicates possible correlations, such as a longitudinal or clustered design, then it is very important to check the independence assumption.
+
+Checking independence in linear and logistic regressions:
+
+ * Linear: Calculate residuals $r_{ij}=y_{ij}-\hat{\mu}_{ij}$ and $r_{ik}=y_{ik}-\hat{\mu}_{ik}$. Plot $r_{ij}$ vs $r_{ik}$ and calculate $corr(r_{ij},r_{ik})$
+ * Logistic: Construct $2\times 2$ table $y_{it}$ vs $y_{it'}$ and calculate $log(OR(y_{it},y_{it'}))$.
+
+#### Schizophrenia example: hallucinations
+
+|  | Jan | Feb | Mar | Apr | May |
+|---|---|---|---|---|---|
+| Patient 1 | 1 | 0 | 0 | 1 | 0 |
+| Patient 2 | 0 | 0 | 0 | 0 | 0 |
+| Patient 3 | 1 | 1 | 1 | 0 | 1 |
+| ... | | | | | |
+| Patient n | 0 | 0 | 1 | 0 | 1 |
+
+For time points $t$ (Feb) and $t'$ (Apr),
+
+| | $y_{it'}=0$ | $y_{it'}=1$ |
+|---|---|---|
+| $y_{it}=0$ | 100 | 20 |
+| $y_{it}=1$ | 20 | 100 |
+
+OR=25, logOR=3.2. Then plot the logOR against time difference - this is called **lorelogram.** Later in the course we will discuss the longitudinal models for which lorelogram can be used; we will also discuss GEE approach and random effects logistic regression models.
+
+
+![](lorelogram_example.png)
+
+For the remainder of this lab session, we only consider the cross-sectional NMES dataset. We first introduce the dataset, then check the mean model, variance model and influence/outliers.
+
+
+### National Medical Expenditure Survey (NMES) Dataset
+
+* Outcome: big expenditure defined as total expenditure > 1000 (bigexp)
+* Exposure: Major smoking caused disease (mscd)
+* Covariate: person's age
+* Dataset: 11,684 people for 40 or older who have smoking data available
+
+```{r}
+data$mscd <- ifelse(data$lc5 + data$chd5 > 0, 1, 0)
+data1 <- data[!is.na(data$eversmk),]
+data1$bigexp <- ifelse(data1$totalexp > 1000, 1, 0)
+```
+
+Fit logistic regression of big medical expenditure vs. age, MSCD and interaction.
+
+```{r}
+mod <- glm(bigexp ~ lastage*mscd, data = data1, family = binomial(link="logit"))
+summary.glm(mod)
+```
+
+
+### 2. Is the Mean Model Correct?
+
+```{r}
+data1 <- data1 %>% mutate(fitted.values = mod$fitted.values,
+                         pearson.raw.resid = bigexp-fitted.values,
+                         pearson.resid = pearson.raw.resid/sqrt(fitted.values*(1-fitted.values)),
+                         dev.resid = summary(mod)$deviance.resid,
+                         dev.resid.formula = sign(bigexp-fitted.values)*sqrt(-2*(bigexp*log(fitted.values)+(1-bigexp)*log(1-fitted.values)))) # Also compute the deviance residual by formula and compare results
+```
+
+#### 2a. Weatherperson plot: Compare empirical means with estimated values
+
+```{r}
+fitted.values.quant <- quantile(data1$fitted.values, seq(0, 1, by = 0.1))
+df.wp <- data1 %>% mutate(fitted.values.range = cut(fitted.values, fitted.values.quant, include.lowest=TRUE)) %>% 
+    group_by(fitted.values.range) %>%
+    summarize(emp.mean = mean(bigexp)) %>% 
+    mutate(est.mean = (fitted.values.quant[-length(fitted.values.quant)] + fitted.values.quant[-1]) / 2)
+
+ggplot(data = df.wp, aes(x = est.mean, y = emp.mean)) + 
+    theme_bw() +
+    geom_point() +
+    geom_smooth() +
+    geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed")
+```
+
+The model fits well while the fitted values are <0.4 but less well at extreme values. To explore this we further plot the average of fitted and observed values within each 10\% quantile of age, stratified by mscd status.
+
+```{r}
+age.quant <- quantile(data1$lastage, seq(0, 1, by = 0.1))
+df.wp.age.mscd <- data1 %>% mutate(age.range = cut(lastage, age.quant, include.lowest = TRUE)) %>%
+    group_by(age.range, mscd) %>%
+    summarize(emp.mean = mean(bigexp), est.mean = mean(fitted.values))
+df.wp.age.mscd$age.mean <- rep((age.quant[-length(age.quant)] + age.quant[-1]) / 2, each = 2)
+
+ggplot(data = df.wp.age.mscd, aes(x = est.mean, y = emp.mean)) + 
+    theme_bw() +
+    geom_point() +
+    geom_smooth() +
+    facet_wrap(~mscd, scales = "free", labeller = label_both) +
+    geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed")
+```
+
+From the plot, we observe a clear difference between the average fitted and observed values when mscd = 1. We next plot the average fitted and observed values vs. age among people with mscd = 1.
+
+```{r}
+ggplot(data = df.wp.age.mscd %>% filter(mscd == 1), aes(x = age.mean)) + 
+    theme_bw() +
+    geom_point(aes(y = emp.mean, color = "emp.mean")) +
+    geom_point(aes(y = est.mean, color = "est.mean")) +
+    labs(color = "value", x = "age", y = "")
+```
+
+This plot suggests that the model needs some different function for age.
+
+
+#### 2b. Residuals vs. fitted values
+
+#### Pearson residual
+
+* Similar to linear models, the Pearson residual is defined as
+$$res_i = y_i-\hat{\mu}_i$$
+where $\hat{\mu}_i = \frac{\exp(x_i^t\beta)}{1+\exp(x_i^t\beta)}$.
+
+* Standardized Pearson residual: $$sres_i = \frac{y_i-\hat{\mu}_i}{\sqrt{\hat{\mu}_i(1-\hat{\mu}_i)}}.$$
+The standardized residual has approximately mean 0 and variance 1.
+
+#### Deviance residual
+
+* General likelihood for binary outcomes $$L = \prod\limits_{i=1}^n L_i = \prod\limits_{i=1}^n \mu_i^{y_i}(1-\mu_i)^{1-y_i},$$
+where $L_i=\mu_i$ if $y_i=1$, $L_i=1-\mu_i$ if $y_i=0$. 
+
+* Without any model assumption, the highest possible likelihood corresponding to the $i$-th observation $L_{i,max}=1$, hence the highest possible total likelihood $L_{max}=1$.
+
+* Under logistic regression model, the likelihood corresponding to the $i$-th observation is
+$$L_{i,fitted} = \hat{\mu}_i^{y_i}(1-\hat{\mu}_i)^{1-y_i}$$
+
+* Deviance is the difference of -2*log-likelihood between the fitted model and the saturated model $$D=-2(logL_{fitted}-logL_{max}) = -2\sum\limits_{i=1}^n \{y_ilog(\hat{\mu}_i)+(1-y_i)log(1-\hat{\mu}_i)\}$$
+
+* The deviance residual is defined as $$d_i=sign(y-\hat{\mu}_i)\sqrt{-2 \{y_i log(\hat{\mu}_i)+(1-y_i)log(1-\hat{\mu}_i)\}}.$$
+
+#### Use Pearson and deviance residuals for model checking
+
+```{r}
+ggplot(data = data1, aes(x = fitted.values, y = pearson.resid)) +
+    theme_bw() +
+    geom_point() + 
+    geom_smooth() +
+    geom_abline(intercept = 0, slope = 0, color = "red", linetype = "dashed")
+
+ggplot(data = data1, aes(x = fitted.values, y = dev.resid)) +
+    theme_bw() +
+    geom_point() + 
+    geom_smooth() +
+    geom_abline(intercept = 0, slope = 0, color = "red", linetype = "dashed")
+
+```
+
+No trend was observed based on Pearson residual, but an upward linear trend was observed based on deviance residual.
+
+
+### 3. Is the Variance Model Correct? -- Underdispersion or Overdispersion?
+
+Compare empirical variance with variance estimated using Bernoulli distribution
+
+```{r}
+varcomp = data1 %>% mutate(fitted.range = as.integer(cut(fitted.values, breaks=seq(0.2,0.8,by=0.05)))) %>% 
+    group_by(fitted.range) %>%
+    summarize(var.emp = var(bigexp), var.est = mean(fitted.values*(1-fitted.values)))
+ggplot(data = varcomp, aes(x = var.emp, y = var.est)) +
+  theme_bw() +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "red")
+```
+
+Estimated variance aligns well with empirical variance - no underdispersion or overdispersion.
+
+If there is underdispersion or overdisperson, the bootstrap can be used to estimate variance of the estimated logistic regression model coefficients.
+
+### 4. Few data points don't have great influence on results
+
+Use DFITS and DBETAS, same as in the linear regression. See page 28 of the slides of 140.653 Lecture 10.

@@ -1,0 +1,367 @@
+---
+title: "Lecture13 Handout"
+author: "Elizabeth Colantuoni"
+date: "5/10/2021"
+output: pdf_document
+---
+
+# I. Objectives
+
+Upon completion of this session, you will be able to do the following:
+
+* Understand and explain the relationships among the hazard, survival, density, and distribution functions for random variables
+
+* Understand and explain the motivation for modeling the hazard/survival rather than density/distribution functions for censored time-to-event data
+
+* Understand and explain the Kaplan-Meier estimate of the survival function
+
+* Understand the log-rank test of equality for two survival functions and its connection to the analysis of data from nested 2x2 tables
+
+# I. Survival endpoints
+
+In the Lecture11-Handout, we discussed the application of log-linear models for survival outcomes.  In this application, we are required to "bin" the survival time.  "Binning" the survival time is somewhat arbitrary; i.e. how wide or narrow to make the bins may depend on the analyst.  
+
+We now move to thinking about analysis of survival outcomes where we let time be continuous!
+
+First, let's revisit survival endpoints.
+
+Take the example we disucssed in *Lecture11-Handout*.
+
+ 1.  The data contains information about *time to death* for inpatients hospitalized for a severe mental disorder. Survival time from hospitalization is in years. 
+
+ 2.  In most studies measuring survival time of patients, we don't get to follow patients long enough to see when the event occurs for all patients.  In fact, within a given study, patients are recruited to particapte over the course of an enrollment period, which is represented by calendar time.  Then our goal is to follow the patients until a particular event occurs; however, the study may end prior to the event occurring.  What information do we have for these patients?  We know they didn't have the event up until a particular time but nothing else.  These patient's outcomes are "censored". 
+
+ 3.  The figure below on the left displays a hypothetical example where we see patients recruited over a particular time window and the follow patients to study termination. Patients still enrolled but whom did not have the event by study termination are censored (these are displayed in red).  The figure on the right displays the same data but where we have scaled the time axis to reflect study time, not calendar time.
+
+```{r survival data display, fig.height=3.25,fig.width=7,echo=FALSE}
+set.seed(1234)
+enter = sample(0:6,9,replace=TRUE)
+event = enter + rexp(9,1/12)
+event = event[order(enter)]
+enter = enter[order(enter)]
+par(mfrow=c(1,2))
+plot(0,0,type="n",ylim=c(0,10),ylab=" ",yaxt="n",xlim=c(0,15),xaxt="n",xlab="Calendar Time");mtext("Study",side=1,line=0.5,at=0,adj=0,cex=0.5);mtext("Starts",side=1,line=1,at=0,adj=0,cex=0.5);mtext("Study",side=1,line=0.5,at=15,adj=0,cex=0.5);mtext("Ends",side=1,line=1,at=15,adj=0,cex=0.5);for(i in seq(9,1,-1)){
+  if(event[i]<15) points(event[i],10-i,pch=20,col="black")
+  cc = "black"
+  if(event[i]>15) {cc="red";event[i] = 15}
+  points(c(enter[i],event[i]),c(10-i,10-i),type="l",col=cc)
+  };abline(v=6);mtext("Recruitment",side=1,line=0.5,at=6,adj=0,cex=0.5);mtext("Ends",side=1,line=1,at=6,adj=0,cex=0.5)
+time = ifelse(event>15,15 - enter,event-enter)
+plot(0,0,type="n",ylim=c(0,10),ylab=" ",yaxt="n",xlim=c(0,15),xlab="Study Time");for(i in seq(9,1,-1)){
+  if(event[i]<15) points(time[i],10-i,pch=20,col="black")
+  if(event[i]>=15) cc="red" else cc="black"
+  points(c(0,time[i]),c(10-i,10-i),type="l",col=cc)
+  }
+```
+
+  4.  Patients are often *censored* because the study ends. We refer to this as administrative censoring.  However, patients may be censored for other reasons including drop-out and becoming ineligible for the event of interest (perhaps a competing event like mortality occurs prior to observing the event of interest).
+  
+  5.  Absent censoring, the survival outcome $Y_i$ is the time from start of an at risk period to when the event of interest occurs.
+  
+  6.  In the presence of censoring, we get to see $\delta_i = 1 \text{ if the event occurs, and } 0 \text{ if the event is censored}$ and $T_i = min(D_i,C_i)$ where $D_i$ is the time when the event occurs and $C_i$ is the time of censoring.  So, in the presence of censoring the data for patient $i$ is $(T_i,\delta_i)$. 
+
+  7.  We often want to understand if the survival experience is different across exposure groups OR to predict the outcome.  In this lecture, we focus on methods to compare the survival experience across exposure groups.
+  
+# III.  Definitions
+
+For now, we will provide essential definitions and relationships for survival outcomes ignoring censoring.
+
+Let $T$ be a time to event random variable, $T \ge 0$.
+
+Then we will define a series of quantities that can be used to describe the distribution of $T$.
+
+ * Cumulative Distribution Function: $F(t) = Pr(T \le t)$
+ 
+ * Survival Function: $S(t) = Pr(T > t) = 1 - F(t)$
+ 
+ * Density function: $f(t) = \frac{d}{dt} F(T)$
+ 
+ \begin{tabular}{rcl}
+ $f(t) d(t)$ & = &  $Pr(t < T < t + dt)$ \\
+ & & \\
+ & = & $S(t) - S(t-dt)$ \\
+ & & \\
+ & = & $(1-S(t)) - (1 - S(t-dt))$ \\
+ &  & \\
+ & = & $F(t+dt) - F(t)$ 
+ \end{tabular}
+ 
+ * Hazard function: $h(t) = \displaystyle \lim_{dt \rightarrow 0} \frac{Pr(t < T \le t + dt | T > t)}{dt}$
+ 
+\begin{tabular}{rcl}
+ $h(t)$ & = &  $\displaystyle \lim_{dt \rightarrow 0} \frac{Pr(t < T \le t + dt | T > t)}{dt}$ \\
+ & & \\
+ & = & $\displaystyle \lim_{dt \rightarrow 0} \frac{Pr(t < T \le t + dt \text{ and } T > t)}{Pr(T > t) dt}$ \\
+ & & \\
+ & = & $\displaystyle \lim_{dt \rightarrow 0} \frac{Pr(t < T \le t + dt \text{ and } T > t)}{dt S(t)}$ \\
+ & & \\
+ & = & $\frac{f(t)}{S(t)}$ \\
+ & & \\
+ & = & $\frac{f(t)}{1-F(t)}$ \\
+ & & \\
+ & = & $\frac{d F(t)}{dt}/[1-F(t)]$ \\
+ & & \\
+ & = & $-\frac{d}{dt}[1-F(t)] / [1-F(t)]$ \\
+ & & \\
+ & = & $-\frac{d}{dt} S(t) / S(t)$ \\
+ & & \\
+ & = & $-\frac{d}{dt} log_e S(t)$ 
+\end{tabular}
+
+ * Cumulative hazard function: $H(t) = \int_0^t h(u) du = log_e S(t)$.  This implies: $S(t) = e^{-\int_0^t h(u) du} = e^{-H(t)}$.  
+
+# IV. Common, Well known Parametric Models
+
+## A. Exponential Model
+
+Assume $T \sim Exponential(\lambda)$ then
+
+ * $F(t) = 1 - e^{-\lambda t}$, $S(t) = e^{-\lambda t}$
+ 
+ * $f(t) = \frac{d}{dt} (1 - e^{-\lambda t}) = \lambda e^{-\lambda t}$
+ 
+ * $E(T) = 1/\lambda$, $Var(T) = 1/\lambda^2$
+ 
+ * $h(t) = f(t)/S(t) = \lambda e^{-\lambda t} / e^{-\lambda t} = \lambda$, i.e. a constant hazard model
+ 
+```{r exponential,fig.height=2,fig.width=6,echo=FALSE}
+t = seq(0,10,0.5)
+ft = dexp(t,rate=1/2)
+Ft = pexp(t,rate=1/2)
+St = 1 - Ft
+par(mfrow=c(1,3),mar=c(3,3,1,1))
+plot(t,ft,type="l",xaxt="n",yaxt="n");mtext("t",side=1,line=1);mtext("f(t)",side=2,line=1);mtext("0",side=1,line=1,at=0)
+plot(t,Ft,type="l",xaxt="n",yaxt="n");points(t,St,type="l",lty=2);mtext("t",side=1,line=1);mtext("0",side=1,line=1,at=0);mtext("F(t)/S(t)",side=2,line=1)
+plot(t,log(St),type="l",xaxt="n",yaxt="n");mtext("t",side=1,line=1);mtext("0",side=1,line=1,at=0);mtext("log S(t)",side=2,line=1)
+```
+
+## B. Gamma Distribution
+
+Assume $T \sim Gamma(\alpha,\lambda)$, then 
+
+ * $f(t) = \frac{\lambda^\alpha t^{\alpha - 1} e^{-\lambda t}}{\Gamma(\alpha)}$, $t > 0$, $\Gamma(\alpha) = \int_{0}^{\infty} t^{\alpha - 1} e^{-t} dt$
+ 
+ * $F(t)$, $S(t)$ and $h(t)$ have to be solved by numerical integration; there are no closed form solutions.
+ 
+```{r gamma,fig.height=2,fig.width=6,echo=FALSE}
+t = seq(0,10,0.1)
+ft1 = dgamma(t,shape=1,scale=2)
+ftg = dgamma(t,shape=1.25,scale=2)
+ftl = dgamma(t,shape=0.5,scale=2)
+St1 = 1 - pgamma(t,shape=1,scale=2)
+Stg = 1 - pgamma(t,shape=1.25,scale=2)
+Stl = 1 - pgamma(t,shape=0.5,scale=2)
+par(mfrow=c(1,3),mar=c(3,3,1,1))
+plot(t,ftl,type="l",xaxt="n",yaxt="n",col="blue");legend(4.5,1.25,c("alpha=1","alpha=1.25","alpha=0.5"),cex=0.75,bty="n",lty=c(1,1,1),col=c("black","red","blue"));points(t,ft1,type="l",col="black");points(t,ftg,type="l",col="red");mtext("t",side=1,line=1);mtext("f(t)",side=2,line=1);mtext("0",side=1,line=1,at=0)
+plot(t,St1,type="l",xaxt="n",yaxt="n",col="black");points(t,Stg,type="l",col="red");points(t,Stl,type="l",col="blue");mtext("t",side=1,line=1);mtext("0",side=1,line=1,at=0);mtext("S(t)",side=2,line=1)
+plot(t,log(Stl),type="l",xaxt="n",yaxt="n",col="blue");points(t,log(Stg),type="l",col="red");points(t,log(St1),type="l",col="black");mtext("t",side=1,line=1);mtext("0",side=1,line=1,at=0);mtext("log S(t)",side=2,line=1)
+```
+
+## C. Weibull Distribution
+
+Assume $T \sim Weibull(\lambda,p)$, then
+
+ * $f(t) = p \lambda t^{p-1} e^{-(\lambda t)^p}$
+ 
+ * $F(t) = 1 - e^{-(\lambda t)^p}$, $S(t) = e^{-(\lambda t)^p}$
+ 
+ * $h(t) = p \lambda^p t^{p-1}$
+ 
+ * When $p = 1$, $Weibull(\lambda,1) = Exponential(\lambda)$.
+ 
+
+```{r weibull,fig.height=2,fig.width=6,echo=FALSE}
+t = seq(0,10,0.1)
+ft1 = dweibull(t,shape=1,scale=2)
+ftg = dweibull(t,shape=1.25,scale=2)
+ftl = dweibull(t,shape=0.5,scale=2)
+St1 = 1 - pweibull(t,shape=1,scale=2)
+Stg = 1 - pweibull(t,shape=1.25,scale=2)
+Stl = 1 - pweibull(t,shape=0.5,scale=2)
+par(mfrow=c(1,3),mar=c(3,3,1,1))
+plot(t,ftl,type="l",xaxt="n",yaxt="n",col="blue");legend(5,0.9,c("p=1","p=1.25","p=0.5"),cex=0.75,bty="n",lty=c(1,1,1),col=c("black","red","blue"));points(t,ft1,type="l",col="black");points(t,ftg,type="l",col="red");mtext("t",side=1,line=1);mtext("f(t)",side=2,line=1);mtext("0",side=1,line=1,at=0)
+plot(t,St1,type="l",xaxt="n",yaxt="n",col="black");points(t,Stg,type="l",col="red");points(t,Stl,type="l",col="blue");mtext("t",side=1,line=1);mtext("0",side=1,line=1,at=0);mtext("S(t)",side=2,line=1)
+plot(t,log(Stg),type="l",xaxt="n",yaxt="n",col="red");points(t,log(Stl),type="l",col="blue");points(t,log(St1),type="l",col="black");mtext("t",side=1,line=1);mtext("0",side=1,line=1,at=0);mtext("log S(t)",side=2,line=1)
+``` 
+
+\newpage
+
+# V. Analysis of Survival Outcomes
+
+Methods for the analysis of survival outcomes are extensive.  Here we will review 3 **must know** methods for analyzing survival outcomes.
+
+ 1. Estimating $S(t)$ via Kaplan-Meier survival function estimate (Lecture13-Handout)
+ 
+ 2. Testing whether $S_1(t) = S_2(t)$ via the log-rank test (Lab 7)
+ 
+ 3. Regression of survival outcomes on exposures via Cox Proportional Hazards regression models (Lecture14-Handout)
+ 
+## A. Estimating $S(t)$
+
+The Kaplan-Meier estimate of the survival function $S(t)$ is also known as the **Product-limit** estimator.
+
+This estimator for the survival function assumes that:
+
+ * censoring is unrelated to prognosis, i.e. event process and censoring process are independent
+ 
+ * the survival probabilities are the same for subjects recruited early and late in the study
+ 
+ * the events happened at the times specified
+
+To construct the Kaplan-Meier estimator, you need to order the unique event times and compute:
+
+\begin{tabular}{lccccccc}
+Event times: & $t_1$ & < &  $t_2$ & < &  ... &  < & $t_J$ \\
+& \\
+No. at risk: & $N_1$ & > & $N_2$ & > & ... & > & $N_J$ \\
+& \\
+No. of events: & $y_1$ & & $y_2$ & & ... & & $y_J$ \\
+\end{tabular}
+
+The estimate of $S(t)$ is 1 if $t < t_1$ and 
+
+$$\hat{S}(t) = \displaystyle \prod_{j:t_j \le t} \left(\frac{N_j - y_j}{N_j}\right)$$
+
+### 1. Greenwood's formula
+
+An estimate of the variance of $\hat{S}(t)$ based on Greenwood's formula (application of Delta method) is:
+
+$$\hat{V}ar(\hat{S}(t)) = \hat{S}(t)^2 \displaystyle\sum_{j:t_j \le t} \frac{y_j}{N_j(N_j - y_j)}$$
+
+A 95% confidence interval for $S(t)$ can be derived as:
+
+$$\hat{S}(t) \pm 1.96 \sqrt{\hat{V}ar(\hat{S}(t))}$$
+
+with imposing the constraint that the confidence interval lies in $[0,1]$, i.e. if the bounds of the confidence interval go outside $[0,1]$, set the values to 0 or 1, respectively.  This is unappealing in many respects!
+
+
+### 2. Variance based on the complementary Log-Log transformation
+
+An alternative to Greenwoods formula for the variance, a variance estimate can be derived based on the complementary Log-Log transformation.
+
+Let $v(t) = log[ - log S(t)]$.  Note that $S(t) \in [0,1]$ and $v(t) \in [-\infty, \infty]$.
+
+$$\hat{V}ar(\hat{v}(t)) = \displaystyle \sum_{j:t_j \le t} \frac{y_j}{N_j(N_j - y_j)} \left[\displaystyle \sum_{j:t_j \le t} log\left(\frac{N_j - y_j}{N_j}\right)\right]^{-2}$$
+
+The 95% confidence interval for $v(t)$ is given by:
+
+$$\hat{v}(t) \pm 1.96 \sqrt{\hat{V}ar(\hat{v}(t))}$$
+
+where we can define the upper and lower bound as $\hat{v}_L(t)$ and $\hat{v}_U(t)$.
+
+NOTE:  $S(t) = exp(-exp(v(t)))$, so the 95% confidence interval for $S(t)$ is:
+
+$$[exp(-exp(\hat{v}_U(t))), exp(-exp(\hat{v}_L(t)))]$$
+
+### 3. Example
+
+Using the data from Lecture11-Handout for inpatients hospitalized for a severe mental disorder, we will be computing the Kaplan-Meier estimate of the survival function for the female patients.  Survival time from hospitalization is in years. 
+
+```{r data,echo=FALSE,results="asis",message=FALSE}
+d = read.table("./survival.csv",sep=",",header=T)
+d$event = 1 - d$censor
+d.female = d[d$male==0,]
+junk = ifelse(d.female$event==0,paste0(d.female$survive,"+"),d.female$survive)
+```
+
+Recall the survival data for females is: `r junk`.
+
+NOTE:  the **+** indicates that the patient was censored at that time.
+
+\newpage
+
+```{r kmest,echo=FALSE,results="asis",message="hide"}
+out = matrix(NA,nrow=15,ncol=40)
+for(i in 1:nrow(d.female)){
+  out[i,1:d.female$survive[i]] = 0
+  out[i,d.female$survive[i]] = d.female$event[i]
+}
+Ni = apply(out,2,FUN=function(x) length(x[!is.na(x)]))
+yi = apply(out,2,FUN=function(x) sum(x,na.rm=TRUE))
+rate = (Ni-yi)/Ni
+St = cumprod(rate)
+
+out = as.data.frame(cbind(round(t(out),0),round(Ni,0),round(yi,0),round(rate,3),round(St,3)))
+names(out) = c(ifelse(d.female$event==0,paste0(d.female$survive,"+"),d.female$survive),"Ni","yi","(Ni-yi)/Ni","S(t)")
+row.names(out) = seq(1,40)
+library(xtable)
+my.table = xtable(out,digits=c(rep(0,15),0,0,0,3,3))
+print(my.table,table.placement="h")
+```
+
+```{r kmplot,fig.height=4,fig.width=6,echo=FALSE}
+censor.time = d.female$survive[d.female$event==0]
+censor.st = out$"S(t)"[censor.time]
+plot(seq(0,40),c(1,out$"S(t)"),type="s",las=1,xlim=c(0,40),ylim=c(0,1),xlab="Time from hospitalization (years)",ylab="Proportion at risk of death");points(censor.time,censor.st,pch="|")
+```
+
+In Lab 7, you will compute the Kaplan-Meier estimate of the survival curve for the male patients!
+
+Compute the 95% confidence interval for $S(2)$:
+
+ 1.  Using Greenwood's formula:
+
+\begin{tabular}{rcl} 
+$\hat{V}ar(\hat{S}(2))$ & = &  $\hat{S}(2)^2 \displaystyle\sum_{j:t_j \le 2} \frac{y_j}{N_j(N_j - y_j)}$ \\
+& & \\
+& = & $\hat{S}(2)^2 \left[\frac{y_1}{N_1(N_1 - y_1)} + \frac{y_2}{N_2(N_2 - y_2)}\right]$ \\
+& & \\
+& = & $0.8^2 \left[\frac{2}{15 \times (15-2)} + \frac{1}{13 \times (13-1)}\right]$ \\
+& & \\
+& = & $0.0107$ 
+\end{tabular}
+
+95% CI for $S(2)$:  $0.8 \pm 1.96 * \sqrt{0.0107} \rightarrow (0.598, 1.003)$ 
+
+\newpage
+
+ 2. Using the Complementary Log-Log transformation
+ 
+\begin{tabular}{rcl}
+$\hat{v}(2)$ & = & $log(-log(\hat{S}(2)))$ \\
+& & \\
+& = & $log(-log(0.8))$ \\
+& & \\
+& = & $-1.50$ \\
+& & \\
+$\hat{V}ar(\hat{v}(2))$ & = & $\displaystyle \sum_{j:t_j \le 2} \frac{y_j}{N_j(N_j - y_j)} \left[\displaystyle \sum_{j:t_j \le 2} log\left(\frac{N_j - y_j}{N_j}\right)\right]^{-2}$ \\
+& & \\
+& = & $\left[ \frac{y_1}{N_1(N_1 - y_1)} + \frac{y_2}{N_2(N_2 - y_2)}\right] \left[log\left(\frac{N_1-y_1}{N_1}\right) + log\left(\frac{N_2-y_2}{N_2}\right) \right]^{-2}$ \\
+& & \\
+& = & $\left[ \frac{2}{15 \times 13} + \frac{1}{13 \times 12}\right] \left[log(13/15)+log(12/13)\right]^{-2}$ \\
+& & \\
+& = & $0.335$ 
+\end{tabular}
+
+95% CI for $v(2)$ is: $\hat{v}(2) \pm 1.96 \sqrt{\hat{V}ar(\hat{v}(2))}$ is $-1.50 \pm 1.96 \sqrt{0.335}$ is $(-2.63, -0.36)$.
+
+95% CI for $S(2)$ is: $(exp(-exp(-0.36)), exp(-exp(-2.63)))$ is $(0.50, 0.93)$.
+
+\newpage
+
+Now, the same analysis using R!
+
+```{r useRSt}
+library(survival)
+St.green = survfit(Surv(survive,event) ~ 1, data = d.female,
+                type = "kaplan-meier",
+                conf.type = "plain")
+St.cll = survfit(Surv(survive,event) ~ 1, data = d.female,
+                type = "kaplan-meier",
+                conf.type = "log-log")
+summary(St.green)
+summary(St.cll)
+```
+
+```{r plotSts,fig.height=6,fig.width=6,echo=FALSE}
+par(mfrow=c(2,1),mar=c(4,4,4,1))
+plot(St.green,conf.int=TRUE,mark.time=TRUE,
+     pch="|",xlab="Time of hospitalization (years)",
+     ylab="Proportion at risk of death",las=1,
+     main="Confidence intervals: Greenwoods formula")
+plot(St.cll,conf.int=TRUE,mark.time=TRUE,
+     pch="|",xlab="Time of hospitalization (years)",
+     ylab="Proportion at risk of death",las=1,
+     main="Confidence intervals: Log( - Log S(t))")
+```
+

@@ -1,0 +1,299 @@
+---
+title: "Lecture4 Handout"
+author: "Elizabeth Colantuoni"
+date: "4/5/2021"
+output: pdf_document
+---
+
+# I. Objectives
+
+Upon completion of this session, you will be able to do the following:
+
+* Conduct an analysis to identify which of a possible set of adjustment variables is a "confounder"
+
+* Write a paragraph summarizing your analysis which includes a description of the data and your main findings
+
+* Understand and explain the asymptotic distribution of the mle's in the GLM family
+
+* Understand and explain the likelihood ratio test for the GLM family
+    
+* Understand and explain how to use Wald tests for the GLM family
+
+```{r load packages,echo=FALSE,results=FALSE,warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(warning = FALSE)
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(tidyverse)
+#install.packages("biostat3")
+library(biostat3)
+library(gridExtra)
+library(lmtest)
+```
+
+# II. Assessing confounding in generalized linear models
+
+In Lecture 3, we reviewed how to assess confounding within logistic regression models and demonstrated that older age (age > 65 years) is a confounding variable for *big expenditure* vs. MSCD relationship.
+
+For this part of the lecture, you will be conducting an analysis of the NMES to assess whether education, poverty status, seatbelt use, marital status or geographic region are confounders for the *big expenditure* vs. MSCD relationship.
+
+## A. Analysis
+
+Modify the code below to separately evaluate whether each of the covariates listed above is a confounding variable.
+NOTE: For this class exercise, we will use ONLY the results from fitting the marginal and conditional logistic regression model.  In practice, you may also want to compute the difference between the marginal and conditional coefficient and test statistic using the bootstrap procedure.
+
+```{r nmesexample}
+load('./nmes.rdata')
+data = nmes
+data[data=='.'] = NA
+
+## Create the necessary variables:
+data$posexp=ifelse(data$totalexp>0,1,0)
+data$mscd=ifelse(data$lc5+data$chd5>0,1,0)
+data1=data[!is.na(data$eversmk),]
+data1$older=ifelse(data1$lastage<65,0,1)
+data1$bigexp=ifelse(data1$totalexp>1000,1,0)
+
+# Fit the models, save the log(OR) and 95% CI
+model.M = glm(bigexp~mscd,data=data1,family="binomial")
+outM = lincom(model.M,c("mscd"))
+model.C = glm(bigexp~mscd+older,data=data1,family="binomial")
+outC = lincom(model.C,c("mscd"))
+
+# Marginal Model output
+outM
+# Conditional Model output
+outC
+```
+
+## B. Write-up
+
+Now, summarize your findings as if you were writing a paragraph for a publishable paper.
+
+Use the following structure:
+
+* Start by summarizing the outcome, exposure and potential confounding variables
+
+* Present the findings from the marginal model
+
+* Present the findings from the conditional models with quantitative support for or against each variable's confounder status.
+
+# III. Maximum likelihood estimation in logistic regression models
+
+In Lecture 3, we reviewed the Newton-Raphson algorithm for finding the root of a function.
+
+## A. Scalar case
+
+In the scalar case, the goal is to find the value of $\beta$ that sets the score equation $U(\beta) = 0$. 
+
+ * Step 0: Pick an initial starting value for $\beta$, call this $\hat{\beta}^{(k)}$.
+ 
+ * Step 1: Compute the slope of $U(\beta)$ at $\hat{\beta}^{(k)}$, i.e. compute $U^\shortmid(\hat{\beta}^{(k)})$.
+ 
+ * Step 2: Construct the tangent line, which is a line that passes through the points $(\hat{\beta}^{(k)}, U(\hat{\beta}^{(k)}))$ and $(\hat{\beta}^{(k+1)},0)$ and has slope $U^\shortmid(\hat{\beta}^{(k)})$.
+ 
+ * Step 3: Solve the following for $\hat{\beta}^{(k+1)}$:
+ 
+\begin{tabular}{rcl}
+$U^\shortmid(\hat{\beta}^{(k)})$ & = & $\frac{U(\hat{\beta}^{(k)})-0}{\hat{\beta}^{(k)}-\hat{\beta}^{(k+1)}}$ \\
+& & \\
+$[\hat{\beta}^{(k)}-\hat{\beta}^{(k+1)}] U^\shortmid(\hat{\beta}^{(k)})$ & = & $U(\hat{\beta}^{(k)})$ \\
+& & \\
+$\hat{\beta}^{(k)}-\hat{\beta}^{(k+1)}$ & = & $U^\shortmid(\hat{\beta}^{(k)})^{-1} U(\hat{\beta}^{(k)})$ \\
+& & \\
+$\hat{\beta}^{(k+1)}$ & = & $\hat{\beta}^{(k)} - U^\shortmid(\hat{\beta}^{(k)})^{-1} U(\hat{\beta}^{(k)})$ \\
+ & & \\
+ & = & $U^\shortmid(\hat{\beta}^{(k)})^{-1} \left(U^\shortmid(\hat{\beta}^{(k)}) \hat{\beta}^{(k)} - U(\hat{\beta}^{(k)})\right)$ \\
+\end{tabular}
+ 
+ * Step 4: Stop if $|\hat{\beta}^{(k+1)} - \hat{\beta}^{(k)}|$ is small.  If not, let $k = k+1$ and repeat Steps 2 through 4.
+
+
+## B. General case
+
+In general, i.e. when $\beta$ is a vector, we have:
+
+$$U(\beta) = X^\shortmid (Y-\mu(\beta))$$
+
+$$U^\shortmid(\beta) = -X^\shortmid V X$$
+
+And the Newton-Raphon method is expressed as:
+
+\begin{tabular}{rcl}
+$\hat{\beta}^{(k+1)}$ & = & $U^\shortmid(\hat{\beta}^{(k)})^{-1} \left(U^\shortmid(\hat{\beta}^{(k)}) \hat{\beta}^{(k)} - U(\hat{\beta}^{(k)})\right)$ \\
+& & \\
+& = & $ -(X^\shortmid V^{(k)} X)^{-1} \left[-(X^\shortmid V^{(k)} X) \hat{\beta}^{(k)} - X^\shortmid (Y - \mu(\hat{\beta}^{(k)}))\right]$ \\
+& & \\
+& = & $(X^\shortmid V^{(k)} X)^{-1} \left[X^\shortmid V^{(k)} \left(X\hat{\beta}^{(k)} + V^{-1(k)}(Y - \mu(\hat{\beta}^{(k)}))\right)\right]$ \\
+& & \\
+& = & $(X^\shortmid V^{(k)} X)^{-1} (X^\shortmid V^{(k)} Z^{(k)} )$ \\
+\end{tabular}
+
+where 
+
+$$V^{(k)} = diag(\mu_i(\beta^{(k)})[1-\mu_i(\beta^{(k)})])$$
+
+$$Z^{(k)} = X\hat{\beta}^{(k)} + V^{-1(k)}\left(Y - \mu(\hat{\beta}^{(k)}) \right) \text{ = a surrogate response.}$$
+
+## C. Iteratively Re-weighted Least Squares (IRLS) 
+
+The general procedure is:
+
+* Step 0: Set an initial value for $\hat{\beta}^{(k)}$, $k = 0$.
+
+* Step 1: Calculate: $V^{(k)}$, $\hat{\mu}(\hat{\beta}^{(k)})$, $Z^{(k)}$.
+
+* Step 2: Update $\hat{\beta}^{(k+1)} = (X^\shortmid V^{(k)} X)^{-1} (X^\shortmid V^{(k)} Z^{(k)})$
+
+* Step 3:  Stop if $\displaystyle\sum_{j=1}^{p+1} \left(\hat{\beta}_j^{(k+1)} - \hat{\beta}_j^{(k)}\right)^2 < \epsilon$; if not, let $k = k + 1$ and repeat Steps 2 and 3.
+
+
+## D. Comparison to weighted least squares
+
+Compare the IRLS to the weighted least squares solution we derived last term:
+
+$$\hat{\beta}_{WLS} = \left(X^\shortmid \hat{V}^{-1} X\right)^{-1} \left(X^\shortmid \hat{V}^{-1} Y\right)$$
+
+These are different!  $\hat{V}$ vs. $\hat{V}^{-1}$.
+
+Recall that we derived:  $\frac{\partial \mu(\beta))}{\partial \beta} = VX = diag\left[\mu(\beta) (1 - \mu(\beta))\right] X$
+
+So that, 
+
+\begin{tabular}{rcl}
+$\hat{\beta}^{(k+1)}$ & = & $(X^\shortmid V^{(k)} X)^{-1} (X^\shortmid V^{(k)} Z^{(k)} )$ \\
+& & \\
+& = & $\left(\frac{\partial \hat{\mu}(\beta^{(k)})}{\partial \beta}^\shortmid \hat{V}^{(k)-1} \frac{\partial \hat{\mu}(\beta^{(k)})}{\partial \beta}\right)^{-1}
+\left(\frac{\partial\hat{\mu}(\beta^{(k)})}{\partial \beta}^\shortmid \hat{V}^{(k)-1} Z^{*(k)}\right)$ \\
+& & \\
+\end{tabular}
+
+where $Z^{*(k)} = \frac{\partial \hat{\mu}(\beta^{(k)})}{\partial \beta}\hat{\beta}^{(k)} + \left(Y - \mu(\hat{\beta}^{(k)}) \right)$.
+
+
+# IV. Inference using $\hat{\beta}_{mle}$
+
+Using similar arguments as we did for determining the distribution of $\hat{\beta}_{mle}$ in linear models, we can show that:
+
+$$\hat{\beta}_{mle} \approx N(\beta, \left[X^\shortmid V X\right]^{-1})$$
+
+So from this we can derive the following set of tests or estimation relating to $\beta$.
+
+## A. Inference for $\beta_j$
+
+Test $H_0: \beta_j = b$ via $Z = \frac{\hat{\beta}_j - b}{\sqrt{\left[X^\shortmid V X\right]^{-1}_{jj}}}$
+
+Confidence intervals can be derived as:  $\hat{\beta}_j \pm 1.96 \sqrt{\left[X^\shortmid V X\right]^{-1}_{jj}}$
+
+
+## B. Estimating linear combinations of $\beta$
+
+Define $d = w^\shortmid \beta$ where $w$ is a $(p+1) \times 1$ vector of scalars to create the relevant linear combination of $\beta$.
+
+Estimate $d$ via $w^\shortmid \hat{\beta}$ and $se(\hat{d}) = \sqrt{w^\shortmid \left[X^\shortmid V X\right]^{-1} w}$
+
+Confidence interval for $d$: $\hat{d} \pm 1.96 se_{\hat{d}}$.
+
+Test $H_0: d = \delta$ via $Z = \frac{\hat{d}-\delta}{se_{\hat{d}}}$.
+
+## C. Nested models
+
+Here we assume we have a model with $\beta = (\beta_0, \beta_1, ..., \beta_p, \beta_{p+1}, ..., \beta_{p+s})$ and define $\beta^+ = (\beta_{p+1}, .., \beta_{p+s})$.  
+
+To conduct a Wald test of $H_0: all $\beta_{p+j}= 0, for j = 1, ..., s$, 
+
+$$W = \hat{\beta}^{+\shortmid} \left[(X^\shortmid V X)_{(+,+)}^{-1}\right]^{-1} \hat{\beta}^+ \approx \displaystyle\sum_{j=1}^{s} Z^2_j \sim \chi^2_s$$
+reject $H_0$ if $W > \chi^2_{s,1-0.05/2}$.
+
+Alternatively, use a likelihood ratio test!
+
+When the null hypothesis is true and sample size is large enough:
+
+$$\Delta = -2 \left[logLike_N(y,\hat{\beta}_N) - logLike_E(y,\hat{\beta}_E)\right] \sim \chi^2_s$$
+
+$\Delta$ represents the "change in deviance" where 
+
+$$deviance = -2 \left[logLike_N(y,\hat{\beta}_N) - logLike_E(y,y)\right] \sim \chi^2_s$$
+where $logLike_E(y,y)$ is the biggest possible value.
+
+The deviance is a measure of fidelity of the model to the data, like the residual sum of squares for linear regression.
+
+## D. Example: NMES big expenditure - MSCD relationship
+
+```{r example}
+data1$agec = data1$lastage - 60
+data1$agesp1 = ifelse(data1$lastage>65,data1$lastage-65,0)
+data1$agesp2 = ifelse(data1$lastage>80,data1$lastage-80,0)
+
+fit0 = glm(bigexp~mscd+agec+agesp1+agesp2,data=data1,family="binomial")
+fit1 = glm(bigexp~mscd*(agec+agesp1+agesp2),data=data1,family="binomial")
+```
+
+Write out the two models we are fitting:
+
+
+\vspace{3cm}
+
+
+### 1. Testing a single coefficient
+
+In Model0, test the null hypothesis that after adjusting for age, there is no relationship between a big expenditure and a MSCD.
+
+State the null and alternative hypotheses:
+
+\vspace{2cm}
+
+```{r single}
+## In Model 0: Test \beta_{mscd} = 0
+summary(fit0)$coefficients
+```
+
+\newpage
+
+## 2. Computing a linear combination of $\beta$
+
+Using Model1, estimate the log odds ratio of a big expenditure comparing persons with and without a MSCD whom are 70 years old.
+
+What is the appropriate linear combination of $\beta$?
+
+\vspace{2cm}
+
+```{r linearcombo}
+## In Model 1: Compute the OR for big expenditure vs. mscd for 70 year olds
+w = c(0,1,0,0,0,10,5,0)
+var.cov = summary(fit1)$cov.scaled
+beta = fit1$coefficients
+# estimate
+t(w) %*% beta
+# standard error
+t(w) %*% var.cov %*% w
+# test statistic
+t(w) %*% beta / sqrt(t(w) %*% var.cov %*% w)
+# Square test statistic ~ chi-square 1
+(t(w) %*% beta / sqrt(t(w) %*% var.cov %*% w))^2
+## Confirm using lincom command
+lincom(fit1,c("mscd+10*mscd:agec+5*mscd:agesp1"))
+```
+
+\newpage
+
+## 3. Comparing nested models
+
+Compare Model0 and Model1 using both a Wald test and a likelihood ratio test.
+
+What null and alternative hypotheses are you testing?
+
+\vspace{2cm}
+
+```{r nested}
+## Nested model: Wald test for interaction
+index = 6:8
+# Compute the wald test
+w = t(fit1$coeff[index]) %*% solve(var.cov[index,index]) %*% fit1$coeff[index]
+w
+pchisq(w,lower.tail=FALSE,df=3)
+## Nested model: likelihood ratio test
+lrtest(fit1,fit0)
+```
+
+
